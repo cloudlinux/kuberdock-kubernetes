@@ -68,6 +68,7 @@ const defaultRootDir = "/var/lib/kubelet"
 // KubeletServer encapsulates all of the parameters necessary for starting up
 // a kubelet. These can either be set via command line or directly.
 type KubeletServer struct {
+	ResourceMultipliers            api.ResourceMultipliers
 	Address                        net.IP
 	AllowPrivileged                bool
 	APIServerList                  []string
@@ -240,6 +241,8 @@ HTTP server: The kubelet can also listen for HTTP and respond to a simple API
 
 // AddFlags adds flags for a specific KubeletServer to the specified FlagSet
 func (s *KubeletServer) AddFlags(fs *pflag.FlagSet) {
+	fs.Float32Var(&s.ResourceMultipliers.CPUMultiplier, "cpu-multiplier", 1.0, "cpu multiplier")
+	fs.Float32Var(&s.ResourceMultipliers.MemoryMultiplier, "memory-multiplier", 1.0, "memory multiplier")
 	fs.StringVar(&s.Config, "config", s.Config, "Path to the config file or directory of files")
 	fs.DurationVar(&s.SyncFrequency, "sync-frequency", s.SyncFrequency, "Max period between synchronizing running containers and config")
 	fs.DurationVar(&s.FileCheckFrequency, "file-check-frequency", s.FileCheckFrequency, "Duration between checking config files for new data")
@@ -377,6 +380,7 @@ func (s *KubeletServer) KubeletConfig() (*KubeletConfig, error) {
 	}
 
 	return &KubeletConfig{
+		ResourceMultipliers:       s.ResourceMultipliers,
 		Address:                   s.Address,
 		AllowPrivileged:           s.AllowPrivileged,
 		CAdvisorInterface:         nil, // launches background processes, not set here
@@ -814,6 +818,7 @@ func makePodSourceConfig(kc *KubeletConfig) *config.PodConfig {
 // KubeletConfig is all of the parameters necessary for running a kubelet.
 // TODO: This should probably be merged with KubeletServer.  The extra object is a consequence of refactoring.
 type KubeletConfig struct {
+	ResourceMultipliers            api.ResourceMultipliers
 	Address                        net.IP
 	AllowPrivileged                bool
 	CAdvisorInterface              cadvisor.Interface
@@ -903,6 +908,7 @@ func createAndInitKubelet(kc *KubeletConfig) (k KubeletBootstrap, pc *config.Pod
 
 	pc = makePodSourceConfig(kc)
 	k, err = kubelet.NewMainKubelet(
+		kc.ResourceMultipliers,
 		kc.Hostname,
 		kc.NodeName,
 		kc.DockerClient,
