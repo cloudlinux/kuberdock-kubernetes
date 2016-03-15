@@ -26,13 +26,13 @@ import (
 	"k8s.io/kubernetes/pkg/securitycontext"
 )
 
-func CapacityFromMachineInfo(info *cadvisorApi.MachineInfo) api.ResourceList {
+func CapacityFromMachineInfo(info *cadvisorApi.MachineInfo, multipliers api.ResourceMultipliers) api.ResourceList {
 	c := api.ResourceList{
 		api.ResourceCPU: *resource.NewMilliQuantity(
-			int64(info.NumCores*1000),
+			int64(float32(info.NumCores*1000)*multipliers.CPUMultiplier),
 			resource.DecimalSI),
 		api.ResourceMemory: *resource.NewQuantity(
-			info.MemoryCapacity,
+			int64(float32(info.MemoryCapacity)*multipliers.MemoryMultiplier),
 			resource.BinarySI),
 	}
 	return c
