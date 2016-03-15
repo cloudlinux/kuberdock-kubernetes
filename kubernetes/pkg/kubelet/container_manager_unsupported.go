@@ -39,6 +39,6 @@ func (unsupportedContainerManager) SystemContainersLimit() api.ResourceList {
 	return api.ResourceList{}
 }
 
-func newContainerManager(mounter mount.Interface, cadvisorInterface cadvisor.Interface, dockerDaemonContainer, systemContainer, kubeletContainer string) (containerManager, error) {
+func newContainerManager(mounter mount.Interface, cadvisorInterface cadvisor.Interface, dockerDaemonContainer, systemContainer, kubeletContainer string, resourceMultipliers api.ResourceMultipliers) (containerManager, error) {
 	return &unsupportedContainerManager{}, nil
 }

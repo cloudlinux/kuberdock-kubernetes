@@ -137,6 +137,7 @@ func waitUntilRuntimeIsUp(cr kubecontainer.Runtime, timeout time.Duration) error
 
 // New creates a new Kubelet for use in main
 func NewMainKubelet(
+	resourceMultipliers api.ResourceMultipliers,
 	hostname string,
 	nodeName string,
 	dockerClient dockertools.DockerInterface,
@@ -259,6 +260,7 @@ func NewMainKubelet(
 	oomWatcher := NewOOMWatcher(cadvisorInterface, recorder)
 
 	klet := &Kubelet{
+		resourceMultipliers:            resourceMultipliers,
 		hostname:                       hostname,
 		nodeName:                       nodeName,
 		dockerClient:                   dockerClient,
@@ -372,7 +374,7 @@ func NewMainKubelet(
 
 	// Setup container manager, can fail if the devices hierarchy is not mounted
 	// (it is required by Docker however).
-	containerManager, err := newContainerManager(mounter, cadvisorInterface, dockerDaemonContainer, systemContainer, resourceContainer)
+	containerManager, err := newContainerManager(mounter, cadvisorInterface, dockerDaemonContainer, systemContainer, resourceContainer, resourceMultipliers)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create the Container Manager: %v", err)
 	}
@@ -419,6 +421,8 @@ func NewMainKubelet(
 	klet.backOff = util.NewBackOff(resyncInterval, maxContainerBackOff)
 	klet.podKillingCh = make(chan *kubecontainer.Pod, podKillingChannelCapacity)
 
+	glog.V(4).Infof("Kubelet resource multipliers: %v\n", klet.resourceMultipliers)
+
 	return klet, nil
 }
 
@@ -433,16 +437,17 @@ type nodeLister interface {
 
 // Kubelet is the main kubelet implementation.
 type Kubelet struct {
-	hostname       string
-	nodeName       string
-	dockerClient   dockertools.DockerInterface
-	runtimeCache   kubecontainer.RuntimeCache
-	kubeClient     client.Interface
-	rootDirectory  string
-	podWorkers     PodWorkers
-	resyncInterval time.Duration
-	resyncTicker   *time.Ticker
-	sourcesReady   SourcesReadyFn
+	resourceMultipliers api.ResourceMultipliers
+	hostname            string
+	nodeName            string
+	dockerClient        dockertools.DockerInterface
+	runtimeCache        kubecontainer.RuntimeCache
+	kubeClient          client.Interface
+	rootDirectory       string
+	podWorkers          PodWorkers
+	resyncInterval      time.Duration
+	resyncTicker        *time.Ticker
+	sourcesReady        SourcesReadyFn
 
 	podManager podManager
 
@@ -1876,7 +1881,8 @@ func (kl *Kubelet) hasInsufficientfFreeResources(pods []*api.Pod) (bool, bool) {
 		// TODO: Should we admit the pod when machine info is unavailable?
 		return false, false
 	}
-	capacity := CapacityFromMachineInfo(info)
+	capacity := CapacityFromMachineInfo(info, kl.resourceMultipliers)
+	glog.V(4).Infof("Kubelet capacity: %v\n", capacity)
 	_, notFittingCPU, notFittingMemory := predicates.CheckPodsExceedingFreeResources(pods, capacity)
 	return len(notFittingCPU) > 0, len(notFittingMemory) > 0
 }
@@ -2412,7 +2418,7 @@ func (kl *Kubelet) setNodeStatus(node *api.Node) error {
 	} else {
 		node.Status.NodeInfo.MachineID = info.MachineID
 		node.Status.NodeInfo.SystemUUID = info.SystemUUID
-		node.Status.Capacity = CapacityFromMachineInfo(info)
+		node.Status.Capacity = CapacityFromMachineInfo(info, kl.resourceMultipliers)
 		node.Status.Capacity[api.ResourcePods] = *resource.NewQuantity(
 			int64(kl.pods), resource.DecimalSI)
 		if node.Status.NodeInfo.BootID != "" &&
@@ -2424,6 +2430,8 @@ func (kl *Kubelet) setNodeStatus(node *api.Node) error {
 		}
 		node.Status.NodeInfo.BootID = info.BootID
 	}
+
+	glog.V(4).Infof("Kubelet node status: %v\n", node.Status)
 
 	verinfo, err := kl.cadvisor.VersionInfo()
 	if err != nil {
