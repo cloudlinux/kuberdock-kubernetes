@@ -29,8 +29,8 @@
 %global _checkshell	/bin/bash
 
 Name:		kubernetes
-Version:	1.1.3
-Release:	4%{?dist}.cloudlinux
+Version:	1.1.8
+Release:	1%{?dist}.cloudlinux
 Epoch:      1
 Summary:    Container cluster management
 License:    ASL 2.0
