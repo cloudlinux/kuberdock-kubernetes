@@ -51,7 +51,7 @@ var (
 	// semantic version is a git hash, but the version itself is no
 	// longer the direct output of "git describe", but a slight
 	// translation to be semver compliant.
-	gitVersion   string = "v1.1.3+6a81b50"
-	gitCommit    string = "6a81b50c7e97bbe0ade075de55ab4fa34f049dc2"    // sha1 from git, output of $(git rev-parse HEAD)
+	gitVersion   string = "v1.1.8+$Format:%h$"
+	gitCommit    string = "$Format:%H$"    // sha1 from git, output of $(git rev-parse HEAD)
 	gitTreeState string = "not a git tree" // state of git tree, either "clean" or "dirty"
 )
