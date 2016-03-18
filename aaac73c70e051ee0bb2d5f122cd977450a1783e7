@@ -1,0 +1,7 @@
+Code-Review+2: Stanislav Sergiienko <ssergiienko@cloudlinux.com>
+Verified+1: Stanislav Sergiienko <ssergiienko@cloudlinux.com>
+Submitted-by: Stanislav Sergiienko <ssergiienko@cloudlinux.com>
+Submitted-at: Fri, 18 Mar 2016 22:22:34 +0200
+Reviewed-on: http://gerrit.cloudlinux.com:8080/8496
+Project: kubernetes-kuberdock
+Branch: refs/heads/k8s-upstream
