@@ -2,20 +2,25 @@
 
 
 <!-- END MUNGE: UNVERSIONED_WARNING -->
+
 Getting started with Kubernetes on Mesos
 ----------------------------------------
 
 **Table of Contents**
+<!-- BEGIN MUNGE: GENERATED_TOC -->
 
-- [About Kubernetes on Mesos](#about-kubernetes-on-mesos)
+  - [About Kubernetes on Mesos](#about-kubernetes-on-mesos)
     - [Prerequisites](#prerequisites)
     - [Deploy Kubernetes-Mesos](#deploy-kubernetes-mesos)
     - [Deploy etcd](#deploy-etcd)
     - [Start Kubernetes-Mesos Services](#start-kubernetes-mesos-services)
-        - [Validate KM Services](#validate-km-services)
-- [Spin up a pod](#spin-up-a-pod)
-- [Run the Example Guestbook App](#run-the-example-guestbook-app)
-        - [Test Guestbook App](#test-guestbook-app)
+      - [Validate KM Services](#validate-km-services)
+  - [Spin up a pod](#spin-up-a-pod)
+  - [Launching kube-dns](#launching-kube-dns)
+  - [What next?](#what-next)
+
+<!-- END MUNGE: GENERATED_TOC -->
+
 
 ## About Kubernetes on Mesos
 
@@ -36,13 +41,13 @@ Further information is available in the Kubernetes on Mesos [contrib directory][
 
 ### Prerequisites
 
-* Understanding of [Apache Mesos][6]
-* A running [Mesos cluster on Google Compute Engine][5]
-* A [VPN connection][10] to the cluster
-* A machine in the cluster which should become the Kubernetes *master node* with:
-  * GoLang > 1.2
-  * make (i.e. build-essential)
-  * Docker
+- Understanding of [Apache Mesos][6]
+- A running [Mesos cluster on Google Compute Engine][5]
+- A [VPN connection][10] to the cluster
+- A machine in the cluster which should become the Kubernetes *master node* with:
+  - GoLang > 1.2
+  - make (i.e. build-essential)
+  - Docker
 
 **Note**: You *can*, but you *don't have to* deploy Kubernetes-Mesos on the same machine the Mesos master is running on.
 
@@ -160,12 +165,6 @@ disown -a
 
 #### Validate KM Services
 
-Add the appropriate binary folder to your `PATH` to access kubectl:
-
-```bash
-export PATH=<path/to/kubernetes-directory>/platforms/linux/amd64:$PATH
-```
-
 Interact with the kubernetes-mesos framework via `kubectl`:
 
 ```console
@@ -232,6 +231,7 @@ started the Kubernetes pod.
 Kube-dns is an addon for Kubernetes which adds DNS-based service discovery to the cluster. For a detailed explanation see [DNS in Kubernetes][4].
 
 The kube-dns addon runs as a pod inside the cluster. The pod consists of three co-located containers:
+
 - a local etcd instance
 - the [skydns][11] DNS server
 - the kube2sky process to glue skydns to the state of the Kubernetes cluster.
@@ -239,6 +239,7 @@ The kube-dns addon runs as a pod inside the cluster. The pod consists of three c
 The skydns container offers DNS service via port 53 to the cluster. The etcd communication works via local 127.0.0.1 communication
 
 We assume that kube-dns will use
+
 - the service IP `10.10.10.10`
 - and the `cluster.local` domain.
 
