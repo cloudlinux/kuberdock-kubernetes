@@ -80,9 +80,8 @@ type nodeConfig struct {
 }
 
 type containerManagerImpl struct {
-	resourceMultipliers api.ResourceMultipliers
-	cadvisorInterface   cadvisor.Interface
-	mountUtil           mount.Interface
+	cadvisorInterface cadvisor.Interface
+	mountUtil         mount.Interface
 	nodeConfig
 	// External containers being managed.
 	systemContainers []*systemContainer
@@ -121,11 +120,10 @@ func validateSystemRequirements(mountUtil mount.Interface) error {
 // TODO(vmarmol): Add limits to the system containers.
 // Takes the absolute name of the specified containers.
 // Empty container name disables use of the specified container.
-func newContainerManager(mountUtil mount.Interface, cadvisorInterface cadvisor.Interface, dockerDaemonContainerName, systemContainerName, kubeletContainerName string, resourceMultipliers api.ResourceMultipliers) (containerManager, error) {
+func newContainerManager(mountUtil mount.Interface, cadvisorInterface cadvisor.Interface, dockerDaemonContainerName, systemContainerName, kubeletContainerName string) (containerManager, error) {
 	return &containerManagerImpl{
-		resourceMultipliers: resourceMultipliers,
-		cadvisorInterface:   cadvisorInterface,
-		mountUtil:           mountUtil,
+		cadvisorInterface: cadvisorInterface,
+		mountUtil:         mountUtil,
 		nodeConfig: nodeConfig{
 			dockerDaemonContainerName: dockerDaemonContainerName,
 			systemContainerName:       systemContainerName,
@@ -206,9 +204,8 @@ func (cm *containerManagerImpl) setupNode() error {
 		var capacity = api.ResourceList{}
 		if err != nil {
 		} else {
-			capacity = CapacityFromMachineInfo(info, cm.resourceMultipliers)
+			capacity = CapacityFromMachineInfo(info)
 		}
-		glog.V(4).Infof("Container manager capacity: %v\n", capacity)
 		memoryLimit := (int64(capacity.Memory().Value() * DockerMemoryLimitThresholdPercent / 100))
 		if memoryLimit < MinDockerMemoryLimit {
 			glog.Warningf("Memory limit %d for container %s is too small, reset it to %d", memoryLimit, cm.dockerDaemonContainerName, MinDockerMemoryLimit)
