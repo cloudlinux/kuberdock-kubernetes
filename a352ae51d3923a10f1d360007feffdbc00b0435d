@@ -1,0 +1,7 @@
+Code-Review+2: Stanislav Sergiienko <ssergiienko@cloudlinux.com>
+Verified+1: Stanislav Sergiienko <ssergiienko@cloudlinux.com>
+Submitted-by: Stanislav Sergiienko <ssergiienko@cloudlinux.com>
+Submitted-at: Fri, 18 Mar 2016 21:55:10 +0200
+Reviewed-on: http://gerrit.cloudlinux.com:8080/8499
+Project: kubernetes-kuberdock
+Branch: refs/heads/kd-1.1.8
