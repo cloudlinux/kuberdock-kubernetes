@@ -46,10 +46,13 @@ import (
 	"k8s.io/kubernetes/pkg/runtime"
 	"k8s.io/kubernetes/pkg/util"
 	deploymentUtil "k8s.io/kubernetes/pkg/util/deployment"
+	utilerrs "k8s.io/kubernetes/pkg/util/errors"
 	"k8s.io/kubernetes/pkg/util/sets"
 	"k8s.io/kubernetes/pkg/util/wait"
+	"k8s.io/kubernetes/pkg/version"
 	"k8s.io/kubernetes/pkg/watch"
 
+	"github.com/blang/semver"
 	"github.com/davecgh/go-spew/spew"
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/net/websocket"
@@ -877,6 +880,36 @@ func (r podResponseChecker) checkAllResponses() (done bool, err error) {
 		return false, nil
 	}
 	return true, nil
+}
+
+// serverVersionGTE returns true if v is greater than or equal to the server
+// version.
+//
+// TODO(18726): This should be incorporated into client.VersionInterface.
+func serverVersionGTE(v semver.Version, c client.VersionInterface) (bool, error) {
+	serverVersion, err := c.ServerVersion()
+	if err != nil {
+		return false, fmt.Errorf("Unable to get server version: %v", err)
+	}
+	sv, err := version.Parse(serverVersion.GitVersion)
+	if err != nil {
+		return false, fmt.Errorf("Unable to parse server version %q: %v", serverVersion.GitVersion, err)
+	}
+	return sv.GTE(v), nil
+}
+
+// Multi-scheduler was implemented in #17865, first built into v1.2.0-alpha.6.
+// It changed the default scheduler name from "scheduler" to
+// "default-scheduler", breaking forward-compatibility with tests that rely on
+// finding events from the default scheduler.
+var multiSchedulerVersion = version.MustParse("v1.2.0-alpha.6")
+
+func getSchedulerName(c client.VersionInterface) string {
+	serverVersionGTEMultiSchedulerVersion, err := serverVersionGTE(multiSchedulerVersion, c)
+	if err == nil && serverVersionGTEMultiSchedulerVersion {
+		return "default-scheduler"
+	}
+	return "scheduler"
 }
 
 func podsResponding(c *client.Client, ns, name string, wantName bool, pods *api.PodList) error {
@@ -2041,9 +2074,56 @@ func restartKubeProxy(host string) error {
 	if !providerIs("gce", "gke", "aws") {
 		return fmt.Errorf("unsupported provider: %s", testContext.Provider)
 	}
+	err1 := restartKubeProxyByInitD(host)
+	if err1 == nil {
+		return nil
+	}
+	err2 := restartKubeProxyByKill(host)
+	if err2 == nil {
+		return nil
+	}
+	return utilerrs.NewAggregate([]error{
+		fmt.Errorf("tried by init.d: %v", err1),
+		fmt.Errorf("tried by kill: %v", err2),
+	})
+}
+
+func restartKubeProxyByInitD(host string) error {
+	// TODO: Make it work for all providers.
+	if !providerIs("gce", "gke", "aws") {
+		return fmt.Errorf("unsupported provider: %s", testContext.Provider)
+	}
 	_, _, code, err := SSH("sudo /etc/init.d/kube-proxy restart", host, testContext.Provider)
 	if err != nil || code != 0 {
 		return fmt.Errorf("couldn't restart kube-proxy: %v (code %v)", err, code)
+	}
+	return nil
+}
+
+// This is derived from the 1.2 release to test cross-version compat.
+func restartKubeProxyByKill(host string) error {
+	// kubelet will restart the kube-proxy since it's running in a static pod
+	_, _, code, err := SSH("sudo pkill kube-proxy", host, testContext.Provider)
+	if err != nil || code != 0 {
+		return fmt.Errorf("couldn't restart kube-proxy: %v (code %v)", err, code)
+	}
+	// wait for kube-proxy to come back up
+	err = wait.Poll(5*time.Second, 60*time.Second, func() (bool, error) {
+		o, _, code, err := SSH("sudo /bin/sh -c 'pgrep kube-proxy | wc -l'", host, testContext.Provider)
+		if err != nil {
+			return false, err
+		}
+		if code != 0 {
+			return false, fmt.Errorf("failed to run command, exited %d", code)
+		}
+		if o == "0\n" {
+			return false, nil
+		}
+		Logf("kube-proxy is back up.")
+		return true, nil
+	})
+	if err != nil {
+		return fmt.Errorf("kube-proxy didn't recover: %v", err)
 	}
 	return nil
 }
@@ -2254,20 +2334,36 @@ func getNodePortURL(client *client.Client, ns, name string, svcPort int) (string
 	return "", fmt.Errorf("Failed to find external address for service %v", name)
 }
 
-// scaleRCByName scales an RC via ns/name lookup. If replicas == 0 it waits till
+// scaleRCByLabels scales an RC via ns/label lookup. If replicas == 0 it waits till
 // none are running, otherwise it does what a synchronous scale operation would do.
-func scaleRCByName(client *client.Client, ns, name string, replicas uint) error {
-	if err := ScaleRC(client, ns, name, replicas, false); err != nil {
-		return err
-	}
-	rc, err := client.ReplicationControllers(ns).Get(name)
+func scaleRCByLabels(client *client.Client, ns string, l map[string]string, replicas uint) error {
+	rcs, err := client.ReplicationControllers(ns).List(labels.SelectorFromSet(labels.Set(l)))
 	if err != nil {
 		return err
 	}
-	if replicas == 0 {
-		return waitForRCPodsGone(client, rc)
-	} else {
-		return waitForPodsWithLabelRunning(
-			client, ns, labels.SelectorFromSet(labels.Set(rc.Spec.Selector)))
+	if len(rcs.Items) == 0 {
+		return fmt.Errorf("RC with labels %v not found in ns %v", l, ns)
 	}
+	Logf("Scaling %v RCs with labels %v in ns %v to %v replicas.", len(rcs.Items), l, ns, replicas)
+	for _, labelRC := range rcs.Items {
+		name := labelRC.Name
+		if err := ScaleRC(client, ns, name, replicas, false); err != nil {
+			return err
+		}
+		rc, err := client.ReplicationControllers(ns).Get(name)
+		if err != nil {
+			return err
+		}
+		if replicas == 0 {
+			if err := waitForRCPodsGone(client, rc); err != nil {
+				return err
+			}
+		} else {
+			if err := waitForPodsWithLabelRunning(
+				client, ns, labels.SelectorFromSet(labels.Set(rc.Spec.Selector))); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
