@@ -402,37 +402,3 @@ func FilterActivePods(pods []api.Pod) []*api.Pod {
 	}
 	return result
 }
-
-func FilterActiveAndSucceededPods(pods []api.Pod) []*api.Pod {
-	var result []*api.Pod
-	for _, value := range pods {
-		if api.PodFailed != value.Status.Phase {
-			result = append(result, &value)
-		}
-	}
-	return result
-}
-
-func FilterPods(pods []api.Pod) []*api.Pod {
-	var result []*api.Pod
-	if len(pods) == 0 {
-		return result
-	}
-
-	switch pods[0].Spec.RestartPolicy {
-	case api.RestartPolicyAlways:
-		result = FilterActivePods(pods)
-		break
-	case api.RestartPolicyOnFailure:
-		result = FilterActiveAndSucceededPods(pods)
-		break
-	case api.RestartPolicyNever:
-		for _, pod := range pods {
-			result = append(result, &pod)
-		}
-		break
-	default:
-		glog.Errorf("unsupported restart policy %v\n", pods[0].Spec.RestartPolicy)
-	}
-	return result
-}

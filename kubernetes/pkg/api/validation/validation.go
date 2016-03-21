@@ -1385,9 +1385,9 @@ func ValidatePodTemplateSpecForRC(template *api.PodTemplateSpec, selectorMap map
 			allErrs = append(allErrs, ValidateReadOnlyPersistentDisks(template.Spec.Volumes).Prefix(fieldName+".spec.volumes")...)
 		}
 		// RestartPolicy has already been first-order validated as per ValidatePodTemplateSpec().
-		/* if spec.Template.Spec.RestartPolicy != api.RestartPolicyAlways {
-			allErrs = append(allErrs, errs.NewFieldNotSupported("template.restartPolicy", spec.Template.Spec.RestartPolicy))
-		}*/
+		if template.Spec.RestartPolicy != api.RestartPolicyAlways {
+			allErrs = append(allErrs, errs.NewFieldValueNotSupported(fieldName+".spec.restartPolicy", template.Spec.RestartPolicy, []string{string(api.RestartPolicyAlways)}))
+		}
 	}
 	return allErrs
 }
