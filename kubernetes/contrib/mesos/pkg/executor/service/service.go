@@ -299,7 +299,6 @@ func (ks *KubeletExecutorServer) createAndInitKubelet(
 	updates := pc.Channel(MESOS_CFG_SOURCE)
 
 	klet, err := kubelet.NewMainKubelet(
-		kc.ResourceMultipliers,
 		kc.Hostname,
 		kc.NodeName,
 		kc.DockerClient,
