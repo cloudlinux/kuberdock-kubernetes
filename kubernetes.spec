@@ -28,6 +28,7 @@
 %global _buildshell	/bin/bash
 %global _checkshell	/bin/bash
 
+
 Name:		kubernetes
 Version:	1.1.3
 Release:	4%{?dist}.cloudlinux
