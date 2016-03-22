@@ -1,3 +1,4 @@
+                      
 %if 0%{?fedora}
 %global with_devel 1
 %global with_bundled 1
@@ -36,7 +37,7 @@ Summary:    Container cluster management
 License:    ASL 2.0
 URL:        %{import_path}
 BuildRoot:  %{_tmppath}/%{name}-%{version}-%{release}-root-%(%{__id_u} -n)
-ExclusiveArch: x86_64
+ExcludeArch: x86_64 %{ix86}
 
 Source0: %{name}-%{version}.tar.gz
 Source1: genmanpages.sh
