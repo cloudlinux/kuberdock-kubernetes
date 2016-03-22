@@ -8,6 +8,13 @@
 %global with_debug 0
 %endif
 
+
+
+
+
+
+
+
 %if 0%{?with_debug}
 # https://bugzilla.redhat.com/show_bug.cgi?id=995136#c12
 %global _dwz_low_mem_die_limit 0
@@ -27,6 +34,8 @@
 # does not work
 %global _buildshell	/bin/bash
 %global _checkshell	/bin/bash
+
+
 
 Name:		kubernetes
 Version:	1.1.3
