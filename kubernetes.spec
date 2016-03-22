@@ -1,3 +1,4 @@
+
 %if 0%{?fedora}
 %global with_devel 1
 %global with_bundled 1
@@ -7,6 +8,13 @@
 %global with_bundled 1
 %global with_debug 0
 %endif
+
+
+
+
+
+
+
 
 %if 0%{?with_debug}
 # https://bugzilla.redhat.com/show_bug.cgi?id=995136#c12
@@ -27,6 +35,8 @@
 # does not work
 %global _buildshell	/bin/bash
 %global _checkshell	/bin/bash
+
+
 
 Name:		kubernetes
 Version:	1.1.3
