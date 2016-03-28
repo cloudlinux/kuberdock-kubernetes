@@ -1,5 +1,13 @@
 MDSFORMANPAGES="kube-apiserver.md kube-controller-manager.md kube-proxy.md kube-scheduler.md kubelet.md"
 
+# remove comments from man pages
+for manpage in ${MDSFORMANPAGES}; do
+  pos=$(grep -n "<\!-- END MUNGE: UNVERSIONED_WARNING -->" ${manpage} | cut -d':' -f1)
+  if [ -n ${pos} ]; then
+    sed -i "1,${pos}{/.*/d}" ${manpage}
+  fi
+done
+
 # for each man page add NAME and SYNOPSIS section
 # kube-apiserver
 sed -i -s "s/## kube-apiserver/# NAME\nkube-apiserver \- Provides the API for kubernetes orchestration.\n\n# SYNOPSIS\n**kube-apiserver** [OPTIONS]\n/" kube-apiserver.md
