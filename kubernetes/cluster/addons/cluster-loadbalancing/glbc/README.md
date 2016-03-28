@@ -8,7 +8,7 @@ It relies on the [Ingress resource](../../../../docs/user-guide/ingress.md) only
 
 ## Prerequisites
 
-Before you can receiver traffic through the GCE L7 Loadbalancer Controller you need:
+Before you can receive traffic through the GCE L7 Loadbalancer Controller you need:
 * A Working Kubernetes 1.1 cluster
 * At least 1 Kubernetes [NodePort Service](../../../../docs/user-guide/services.md#type-nodeport) (this is the endpoint for your Ingress)
 * Firewall-rules that allow traffic to the NodePort service, as indicated by `kubectl` at Service creation time
@@ -85,7 +85,7 @@ Events:
 
 Since GLBC runs as a cluster addon, you cannot simply delete the RC. The easiest way to disable it is to do as follows:
 
-* IF you want to tear down existing L7 loadbalancers, hit the /delete-all-and-quit endpoint on the pod:
+* IFF you want to tear down existing L7 loadbalancers, hit the /delete-all-and-quit endpoint on the pod:
 
 ```console
 $ kubectl get pods --namespace=kube-system
