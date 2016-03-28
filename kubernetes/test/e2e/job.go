@@ -23,7 +23,6 @@ import (
 	"k8s.io/kubernetes/pkg/api/errors"
 	"k8s.io/kubernetes/pkg/apis/extensions"
 	client "k8s.io/kubernetes/pkg/client/unversioned"
-	"k8s.io/kubernetes/pkg/fields"
 	"k8s.io/kubernetes/pkg/kubectl"
 	"k8s.io/kubernetes/pkg/labels"
 	"k8s.io/kubernetes/pkg/util/wait"
@@ -41,7 +40,7 @@ const (
 )
 
 var _ = Describe("Job", func() {
-	f := NewFramework("job")
+	f := NewDefaultFramework("job")
 	parallelism := 2
 	completions := 4
 	lotsOfFailures := 5 // more than completions
@@ -124,7 +123,7 @@ var _ = Describe("Job", func() {
 		Expect(err).NotTo(HaveOccurred())
 
 		By("scale job up")
-		scaler, err := kubectl.ScalerFor("Job", f.Client)
+		scaler, err := kubectl.ScalerFor(extensions.Kind("Job"), f.Client)
 		Expect(err).NotTo(HaveOccurred())
 		waitForScale := kubectl.NewRetryParams(5*time.Second, 1*time.Minute)
 		waitForReplicas := kubectl.NewRetryParams(5*time.Second, 5*time.Minute)
@@ -149,7 +148,7 @@ var _ = Describe("Job", func() {
 		Expect(err).NotTo(HaveOccurred())
 
 		By("scale job down")
-		scaler, err := kubectl.ScalerFor("Job", f.Client)
+		scaler, err := kubectl.ScalerFor(extensions.Kind("Job"), f.Client)
 		Expect(err).NotTo(HaveOccurred())
 		waitForScale := kubectl.NewRetryParams(5*time.Second, 1*time.Minute)
 		waitForReplicas := kubectl.NewRetryParams(5*time.Second, 5*time.Minute)
@@ -161,7 +160,7 @@ var _ = Describe("Job", func() {
 		Expect(err).NotTo(HaveOccurred())
 	})
 
-	It("should stop a job", func() {
+	It("should delete a job", func() {
 		By("Creating a job")
 		job := newTestJob("notTerminate", "foo", api.RestartPolicyNever, parallelism, completions)
 		job, err := createJob(f.Client, f.Namespace.Name, job)
@@ -171,17 +170,30 @@ var _ = Describe("Job", func() {
 		err = waitForAllPodsRunning(f.Client, f.Namespace.Name, job.Name, parallelism)
 		Expect(err).NotTo(HaveOccurred())
 
-		By("scale job down")
-		reaper, err := kubectl.ReaperFor("Job", f.Client)
+		By("delete a job")
+		reaper, err := kubectl.ReaperFor(extensions.Kind("Job"), f.Client)
 		Expect(err).NotTo(HaveOccurred())
 		timeout := 1 * time.Minute
-		_, err = reaper.Stop(f.Namespace.Name, job.Name, timeout, api.NewDeleteOptions(0))
+		err = reaper.Stop(f.Namespace.Name, job.Name, timeout, api.NewDeleteOptions(0))
 		Expect(err).NotTo(HaveOccurred())
 
 		By("Ensuring job was deleted")
 		_, err = f.Client.Extensions().Jobs(f.Namespace.Name).Get(job.Name)
 		Expect(err).To(HaveOccurred())
 		Expect(errors.IsNotFound(err)).To(BeTrue())
+	})
+
+	It("should fail a job", func() {
+		By("Creating a job")
+		job := newTestJob("notTerminate", "foo", api.RestartPolicyNever, parallelism, completions)
+		activeDeadlineSeconds := int64(10)
+		job.Spec.ActiveDeadlineSeconds = &activeDeadlineSeconds
+		job, err := createJob(f.Client, f.Namespace.Name, job)
+		Expect(err).NotTo(HaveOccurred())
+
+		By("Ensuring job was failed")
+		err = waitForJobFail(f.Client, f.Namespace.Name, job.Name)
+		Expect(err).NotTo(HaveOccurred())
 	})
 })
 
@@ -192,8 +204,9 @@ func newTestJob(behavior, name string, rPol api.RestartPolicy, parallelism, comp
 			Name: name,
 		},
 		Spec: extensions.JobSpec{
-			Parallelism: &parallelism,
-			Completions: &completions,
+			Parallelism:    &parallelism,
+			Completions:    &completions,
+			ManualSelector: newBool(true),
 			Template: api.PodTemplateSpec{
 				ObjectMeta: api.ObjectMeta{
 					Labels: map[string]string{jobSelectorKey: name},
@@ -211,7 +224,7 @@ func newTestJob(behavior, name string, rPol api.RestartPolicy, parallelism, comp
 					Containers: []api.Container{
 						{
 							Name:    "c",
-							Image:   "gcr.io/google_containers/busybox",
+							Image:   "gcr.io/google_containers/busybox:1.24",
 							Command: []string{},
 							VolumeMounts: []api.VolumeMount{
 								{
@@ -234,7 +247,7 @@ func newTestJob(behavior, name string, rPol api.RestartPolicy, parallelism, comp
 		job.Spec.Template.Spec.Containers[0].Command = []string{"/bin/sh", "-c", "exit 0"}
 	case "randomlySucceedOrFail":
 		// Bash's $RANDOM generates pseudorandom int in range 0 - 32767.
-		// Dividing by 16384 gives roughly 50/50 chance of succeess.
+		// Dividing by 16384 gives roughly 50/50 chance of success.
 		job.Spec.Template.Spec.Containers[0].Command = []string{"/bin/sh", "-c", "exit $(( $RANDOM / 16384 ))"}
 	case "failOnce":
 		// Fail the first the container of the pod is run, and
@@ -252,14 +265,15 @@ func createJob(c *client.Client, ns string, job *extensions.Job) (*extensions.Jo
 }
 
 func deleteJob(c *client.Client, ns, name string) error {
-	return c.Extensions().Jobs(ns).Delete(name, api.NewDeleteOptions(0))
+	return c.Extensions().Jobs(ns).Delete(name, nil)
 }
 
 // Wait for all pods to become Running.  Only use when pods will run for a long time, or it will be racy.
 func waitForAllPodsRunning(c *client.Client, ns, jobName string, parallelism int) error {
 	label := labels.SelectorFromSet(labels.Set(map[string]string{jobSelectorKey: jobName}))
 	return wait.Poll(poll, jobTimeout, func() (bool, error) {
-		pods, err := c.Pods(ns).List(label, fields.Everything())
+		options := api.ListOptions{LabelSelector: label}
+		pods, err := c.Pods(ns).List(options)
 		if err != nil {
 			return false, err
 		}
@@ -282,4 +296,26 @@ func waitForJobFinish(c *client.Client, ns, jobName string, completions int) err
 		}
 		return curr.Status.Succeeded == completions, nil
 	})
+}
+
+// Wait for job fail.
+func waitForJobFail(c *client.Client, ns, jobName string) error {
+	return wait.Poll(poll, jobTimeout, func() (bool, error) {
+		curr, err := c.Extensions().Jobs(ns).Get(jobName)
+		if err != nil {
+			return false, err
+		}
+		for _, c := range curr.Status.Conditions {
+			if c.Type == extensions.JobFailed && c.Status == api.ConditionTrue {
+				return true, nil
+			}
+		}
+		return false, nil
+	})
+}
+
+func newBool(val bool) *bool {
+	p := new(bool)
+	*p = val
+	return p
 }
