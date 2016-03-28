@@ -29,7 +29,7 @@
 %global _checkshell	/bin/bash
 
 Name:		kubernetes
-Version:	1.1.8
+Version:	1.2.0
 Release:	1%{?dist}.cloudlinux
 Epoch:      1
 Summary:    Container cluster management

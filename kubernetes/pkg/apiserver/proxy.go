@@ -29,11 +29,12 @@ import (
 	"k8s.io/kubernetes/pkg/api"
 	"k8s.io/kubernetes/pkg/api/errors"
 	"k8s.io/kubernetes/pkg/api/rest"
+	"k8s.io/kubernetes/pkg/api/unversioned"
 	"k8s.io/kubernetes/pkg/apiserver/metrics"
 	"k8s.io/kubernetes/pkg/httplog"
 	"k8s.io/kubernetes/pkg/runtime"
-	"k8s.io/kubernetes/pkg/util"
 	"k8s.io/kubernetes/pkg/util/httpstream"
+	"k8s.io/kubernetes/pkg/util/net"
 	proxyutil "k8s.io/kubernetes/pkg/util/proxy"
 
 	"github.com/golang/glog"
@@ -42,11 +43,11 @@ import (
 // ProxyHandler provides a http.Handler which will proxy traffic to locations
 // specified by items implementing Redirector.
 type ProxyHandler struct {
-	prefix                 string
-	storage                map[string]rest.Storage
-	codec                  runtime.Codec
-	context                api.RequestContextMapper
-	apiRequestInfoResolver *APIRequestInfoResolver
+	prefix              string
+	storage             map[string]rest.Storage
+	serializer          runtime.NegotiatedSerializer
+	context             api.RequestContextMapper
+	requestInfoResolver *RequestInfoResolver
 }
 
 func (r *ProxyHandler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
@@ -56,10 +57,10 @@ func (r *ProxyHandler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	var apiResource string
 	var httpCode int
 	reqStart := time.Now()
-	defer metrics.Monitor(&verb, &apiResource, util.GetClient(req), &httpCode, reqStart)
+	defer metrics.Monitor(&verb, &apiResource, net.GetHTTPClient(req), httpCode, reqStart)
 
-	requestInfo, err := r.apiRequestInfoResolver.GetAPIRequestInfo(req)
-	if err != nil {
+	requestInfo, err := r.requestInfoResolver.GetRequestInfo(req)
+	if err != nil || !requestInfo.IsResourceRequest {
 		notFound(w, req)
 		httpCode = http.StatusNotFound
 		return
@@ -98,19 +99,19 @@ func (r *ProxyHandler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	}
 	apiResource = resource
 
+	gv := unversioned.GroupVersion{Group: requestInfo.APIGroup, Version: requestInfo.APIVersion}
+
 	redirector, ok := storage.(rest.Redirector)
 	if !ok {
 		httplog.LogOf(req, w).Addf("'%v' is not a redirector", resource)
-		httpCode = errorJSON(errors.NewMethodNotSupported(resource, "proxy"), r.codec, w)
+		httpCode = errorNegotiated(errors.NewMethodNotSupported(api.Resource(resource), "proxy"), r.serializer, gv, w, req)
 		return
 	}
 
 	location, roundTripper, err := redirector.ResourceLocation(ctx, id)
 	if err != nil {
 		httplog.LogOf(req, w).Addf("Error getting ResourceLocation: %v", err)
-		status := errToAPIStatus(err)
-		writeJSON(status.Code, r.codec, status, w, true)
-		httpCode = status.Code
+		httpCode = errorNegotiated(err, r.serializer, gv, w, req)
 		return
 	}
 	if location == nil {
@@ -143,19 +144,20 @@ func (r *ProxyHandler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 
 	newReq, err := http.NewRequest(req.Method, location.String(), req.Body)
 	if err != nil {
-		status := errToAPIStatus(err)
-		writeJSON(status.Code, r.codec, status, w, true)
-		notFound(w, req)
-		httpCode = status.Code
+		httpCode = errorNegotiated(err, r.serializer, gv, w, req)
 		return
 	}
 	httpCode = http.StatusOK
 	newReq.Header = req.Header
+	newReq.ContentLength = req.ContentLength
+	// Copy the TransferEncoding is for future-proofing. Currently Go only supports "chunked" and
+	// it can determine the TransferEncoding based on ContentLength and the Body.
+	newReq.TransferEncoding = req.TransferEncoding
 
 	// TODO convert this entire proxy to an UpgradeAwareProxy similar to
 	// https://github.com/openshift/origin/blob/master/pkg/util/httpproxy/upgradeawareproxy.go.
 	// That proxy needs to be modified to support multiple backends, not just 1.
-	if r.tryUpgrade(w, req, newReq, location, roundTripper) {
+	if r.tryUpgrade(w, req, newReq, location, roundTripper, gv) {
 		return
 	}
 
@@ -204,14 +206,13 @@ func (r *ProxyHandler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 }
 
 // tryUpgrade returns true if the request was handled.
-func (r *ProxyHandler) tryUpgrade(w http.ResponseWriter, req, newReq *http.Request, location *url.URL, transport http.RoundTripper) bool {
+func (r *ProxyHandler) tryUpgrade(w http.ResponseWriter, req, newReq *http.Request, location *url.URL, transport http.RoundTripper, gv unversioned.GroupVersion) bool {
 	if !httpstream.IsUpgradeRequest(req) {
 		return false
 	}
 	backendConn, err := proxyutil.DialURL(location, transport)
 	if err != nil {
-		status := errToAPIStatus(err)
-		writeJSON(status.Code, r.codec, status, w, true)
+		errorNegotiated(err, r.serializer, gv, w, req)
 		return true
 	}
 	defer backendConn.Close()
@@ -221,15 +222,13 @@ func (r *ProxyHandler) tryUpgrade(w http.ResponseWriter, req, newReq *http.Reque
 	// hijack, just for reference...
 	requestHijackedConn, _, err := w.(http.Hijacker).Hijack()
 	if err != nil {
-		status := errToAPIStatus(err)
-		writeJSON(status.Code, r.codec, status, w, true)
+		errorNegotiated(err, r.serializer, gv, w, req)
 		return true
 	}
 	defer requestHijackedConn.Close()
 
 	if err = newReq.Write(backendConn); err != nil {
-		status := errToAPIStatus(err)
-		writeJSON(status.Code, r.codec, status, w, true)
+		errorNegotiated(err, r.serializer, gv, w, req)
 		return true
 	}
 
