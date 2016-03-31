@@ -66,9 +66,9 @@ Summary:        Container cluster management
 License:        ASL 2.0
 URL:            %{import_path}
 ExclusiveArch:  x86_64 ppc64le
-Source0:        https://%{provider_prefix}/archive/%{commit}/%{repo}-%{shortcommit}.tar.gz
-Source1:        https://%{k8s_provider_prefix}/archive/%{k8s_commit}/%{k8s_repo}-%{k8s_shortcommit}.tar.gz
-Source2:        https://%{con_provider_prefix}/archive/%{con_commit}/%{con_repo}-%{con_shortcommit}.tar.gz
+Source0:        origin-847f337.tar.gz
+Source1:        kubernetes-%{kube_version}.tar.gz
+Source2:        contrib-18bb93d.tar.gz
 
 Source33:       genmanpages.sh
 Patch2:         Change-etcd-server-port.patch
