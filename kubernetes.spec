@@ -20,8 +20,19 @@
 %global repo		    kubernetes
 # https://github.com/GoogleCloudPlatform/kubernetes
 %global import_path	    %{provider}.%{provider_tld}/%{project}/%{repo}
-%global commit		    6a5c06e3d1eb27a6310a09270e4a5fb1afa93e74
+%global commit		    50809107cd47a1f62da362bccefdd9e6f7076145
 %global shortcommit	    %(c=%{commit}; echo ${c:0:7})
+
+%global con_provider        github
+%global con_provider_tld    com
+%global con_project         kubernetes
+%global con_repo            contrib
+%global con_import_path     %{con_provider}.%{con_provider_tld}/%{con_project}/%{con_repo}
+%global con_commit          81f6fc52617bf1cf02680f1a768b019ddf16c42b
+%global con_shortcommit     %(c=%{con_commit}; echo ${c:0:7})
+
+%global kube_version          1.2.1
+%global kube_git_version      v%{kube_version}
 
 #I really need this, otherwise "version_ldflags=$(kube::version_ldflags)"
 # does not work
@@ -29,8 +40,8 @@
 %global _checkshell	/bin/bash
 
 Name:		kubernetes
-Version:	1.1.3
-Release:	4%{?dist}.cloudlinux
+Version:	%{kube_version}
+Release:	1%{?dist}.cloudlinux
 Epoch:      1
 Summary:    Container cluster management
 License:    ASL 2.0
@@ -40,21 +51,8 @@ ExclusiveArch: x86_64
 
 Source0: %{name}-%{version}.tar.gz
 Source1: genmanpages.sh
-Source2: kube-apiserver.service
-Source3: kube-controller-manager.service
-Source4: kube-scheduler.service
-Source5: kubelet.service
-Source6: kube-proxy.service
-Source7: kube-proxy.init
-Source8: kubernetes.conf
-Source9: apiserver
-Source10: config
-Source11: controller-manager
-Source12: kubelet
-Source13: proxy
-Source14: scheduler
-
-# Patch0: kuberdock-1.1.3.patch
+Source2: https://%{con_provider_prefix}/archive/%{con_commit}/%{con_repo}-%{con_commit}.zip
+Source3: kube-proxy.init
 
 Requires: %{name}-master = %{epoch}:%{version}-%{release}
 Requires: %{name}-node = %{epoch}:%{version}-%{release}
@@ -400,17 +398,19 @@ Kubernetes services for node host
 
 
 %prep
+%setup -qn %{con_repo}-%{con_commit} -T -b 2
 %setup -qn %{name}-%{version}
-# %patch0 -p1
+
+# copy contrib folder
+cp -r ../%{con_repo}-%{con_commit}/init contrib/.
 
 
 %build
 export KUBE_GIT_TREE_STATE="clean"
 export KUBE_GIT_COMMIT=%{commit}
-export KUBE_GIT_VERSION=v1.0.0-290-gb2dafdaef5acea
+export KUBE_GIT_VERSION=%{kube_git_version}
 
 hack/build-go.sh --use_go_build
-hack/build-go.sh --use_go_build cmd/kube-version-change
 
 # convert md to man
 pushd docs
@@ -428,11 +428,11 @@ kube::golang::setup_env
 
 output_path="${KUBE_OUTPUT_BINPATH}/$(kube::golang::current_platform)"
 
-binaries=(kube-apiserver kube-controller-manager kube-scheduler kube-proxy kubelet kubectl kube-version-change)
+binaries=(kube-apiserver kube-controller-manager kube-scheduler kube-proxy kubelet kubectl)
 install -m 755 -d %{buildroot}%{_bindir}
 for bin in "${binaries[@]}"; do
-  echo "+++ INSTALLING ${bin}"
-  install -p -m 755 -t %{buildroot}%{_bindir} ${output_path}/${bin}
+    echo "+++ INSTALLING ${bin}"
+    install -p -m 755 -t %{buildroot}%{_bindir} ${output_path}/${bin}
 done
 
 # install the bash completion
@@ -440,29 +440,20 @@ install -d -m 0755 %{buildroot}%{_datadir}/bash-completion/completions/
 install -t %{buildroot}%{_datadir}/bash-completion/completions/ contrib/completions/bash/kubectl
 
 # install config files
-#install -d -m 0755 %{buildroot}%{_sysconfdir}/%{name}
-#install -m 644 -t %{buildroot}%{_sysconfdir}/%{name} contrib/init/systemd/environ/*
+install -d -m 0755 %{buildroot}%{_sysconfdir}/%{name}
+install -m 644 -t %{buildroot}%{_sysconfdir}/%{name} contrib/init/systemd/environ/*
 
 # install service files
 %if 0%{?rhel} >= 7
 install -d -m 0755 %{buildroot}%{_unitdir}
-install -m 0644 -t %{buildroot}%{_unitdir} %{SOURCE2}
-install -m 0644 -t %{buildroot}%{_unitdir} %{SOURCE3}
-install -m 0644 -t %{buildroot}%{_unitdir} %{SOURCE4}
-install -m 0644 -t %{buildroot}%{_unitdir} %{SOURCE5}
-install -m 0644 -t %{buildroot}%{_unitdir} %{SOURCE6}
+install -m 0644 -t %{buildroot}%{_unitdir} contrib/init/systemd/*.service
 %else
-install -D -p -m 755 %{SOURCE7} %{buildroot}%{_sysconfdir}/rc.d/init.d/kube-proxy
+install -D -p -m 755 %{SOURCE3} %{buildroot}%{_sysconfdir}/rc.d/init.d/kube-proxy
 %endif
 
 # install config files
 install -d -m 0755 %{buildroot}%{_sysconfdir}/%{name}
-install -m 0644 -t %{buildroot}%{_sysconfdir}/%{name} %{SOURCE9}
-install -m 0644 -t %{buildroot}%{_sysconfdir}/%{name} %{SOURCE10}
-install -m 0644 -t %{buildroot}%{_sysconfdir}/%{name} %{SOURCE11}
-install -m 0644 -t %{buildroot}%{_sysconfdir}/%{name} %{SOURCE12}
-install -m 0644 -t %{buildroot}%{_sysconfdir}/%{name} %{SOURCE13}
-install -m 0644 -t %{buildroot}%{_sysconfdir}/%{name} %{SOURCE14}
+install -m 644 -t %{buildroot}%{_sysconfdir}/%{name} contrib/init/systemd/environ/*
 
 # install manpages
 install -d %{buildroot}%{_mandir}/man1
@@ -473,7 +464,8 @@ install -d %{buildroot}%{_sharedstatedir}/kubelet
 
 # place contrib/init/systemd/tmpfiles.d/kubernetes.conf to /usr/lib/tmpfiles.d/kubernetes.conf
 install -d -m 0755 %{buildroot}%{_tmpfilesdir}
-install -p -m 0644 -t %{buildroot}%{_tmpfilesdir} %{SOURCE8}
+install -p -m 0644 -t %{buildroot}%{_tmpfilesdir} contrib/init/systemd/tmpfiles.d/kubernetes.conf
+#install -p -m 0644 -t %{buildroot}%{_tmpfilesdir} %{SOURCE8}
 
 %if 0%{?with_debug}
 # remove porter as it is built inside docker container without options for debug info
@@ -492,7 +484,7 @@ done
 install -d -m 0755 %{buildroot}%{_sharedstatedir}/kubernetes-unit-test/
 cp -pav README.md %{buildroot}%{_sharedstatedir}/kubernetes-unit-test/.
 for d in _output Godeps api cmd docs examples hack pkg plugin third_party test; do
-  cp -a $d %{buildroot}%{_sharedstatedir}/kubernetes-unit-test/
+    cp -a $d %{buildroot}%{_sharedstatedir}/kubernetes-unit-test/
 done
 
 
@@ -558,7 +550,6 @@ getent passwd kube >/dev/null || useradd -r -g kube -d / -s /sbin/nologin \
 %caps(cap_net_bind_service=ep) %{_bindir}/kube-apiserver
 %{_bindir}/kube-controller-manager
 %{_bindir}/kube-scheduler
-%{_bindir}/kube-version-change
 %{_bindir}/kubectl
 %{_datadir}/bash-completion/completions/kubectl
 %{_unitdir}/kube-apiserver.service
@@ -576,7 +567,6 @@ getent passwd kube >/dev/null || useradd -r -g kube -d / -s /sbin/nologin \
 %{_mandir}/man1/kube-proxy.1*
 %{_bindir}/kubelet
 %{_bindir}/kube-proxy
-%{_bindir}/kube-version-change
 %{_bindir}/kubectl
 %{_unitdir}/kubelet.service
 %{_unitdir}/kube-proxy.service
@@ -614,34 +604,31 @@ getent passwd kube >/dev/null || useradd -r -g kube -d / -s /sbin/nologin \
 %{_unitdir}/kube-proxy.service
 %else
 %{_sysconfdir}/rc.d/init.d/kube-proxy
-%exclude %{_mandir}/man1/kube-apiserver.1*
-%exclude %{_mandir}/man1/kube-controller-manager.1*
-%exclude %{_mandir}/man1/kube-scheduler.1*
-%exclude %{_mandir}/man1/kubectl.1*
-%exclude %{_mandir}/man1/kubectl-*
-%exclude %{_mandir}/man1/kubelet.1*
-%exclude %{_mandir}/man1/kubectl.1*
-%exclude %{_mandir}/man1/kubectl-*
 %exclude %{_bindir}/kube-apiserver
 %exclude %{_bindir}/kube-controller-manager
 %exclude %{_bindir}/kube-scheduler
-%exclude %{_bindir}/kube-version-change
 %exclude %{_bindir}/kubectl
 %exclude %{_bindir}/kubelet
-%exclude %{_bindir}/kube-version-change
-%exclude %{_bindir}/kubectl
-%exclude %{_bindir}/kubectl
 %exclude %{_datadir}/bash-completion/completions/kubectl
-%exclude %{_datadir}/bash-completion/completions/kubectl
+%exclude %{_mandir}/man1/kube-apiserver.1*
+%exclude %{_mandir}/man1/kube-controller-manager.1*
+%exclude %{_mandir}/man1/kube-scheduler.1*
+%exclude %{_mandir}/man1/kubectl-*
+%exclude %{_mandir}/man1/kubectl.1*
+%exclude %{_mandir}/man1/kubelet.1*
 %exclude %{_sharedstatedir}/kubernetes-unit-test/
 %exclude %{_sysconfdir}/%{name}/apiserver
 %exclude %{_sysconfdir}/%{name}/controller-manager
-%exclude %{_sysconfdir}/%{name}/scheduler
 %exclude %{_sysconfdir}/%{name}/kubelet
+%exclude %{_sysconfdir}/%{name}/scheduler
 %endif
 
 
 %changelog
+* Mon Apr 04 2016 Sergey Fokin <sfokin@cloudlinux.com> - 1.2.1-1.cloudlinux
+- update to 1.2.1
+- add contrib form 81f6fc52617bf1cf02680f1a768b019ddf16c42b commit
+
 * Wed Feb 24 2016 Sergey Fokin <sfokin@cloudlinux.com> - 1.1.3-3.cloudlinux
 - some changes in kuberdock-1.1.3.patch
 
