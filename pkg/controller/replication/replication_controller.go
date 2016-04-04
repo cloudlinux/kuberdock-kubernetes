@@ -535,7 +535,7 @@ func (rm *ReplicationManager) syncReplicationController(key string) error {
 	}
 
 	// TODO: Do this in a single pass, or use an index.
-	filteredPods := controller.FilterActivePods(podList.Items)
+	filteredPods := controller.FilterPods(podList.Items)
 	if rcNeedsSync {
 		rm.manageReplicas(filteredPods, &rc)
 	}

@@ -4,7 +4,7 @@
 #passwd -d root
 #yum install mock
 
-KUBE_SRC=~/kubernetes-kuberdock
+KUBE_SRC=/home/centos/gocode/src/k8s.io/kubernetes-kuberdock
 
 # Cleanup
 #runuser -l builder -c "rm -rf /home/builder/rpmbuild"

@@ -645,3 +645,28 @@ func (o ReplicaSetsByCreationTimestamp) Less(i, j int) bool {
 	}
 	return o[i].CreationTimestamp.Before(o[j].CreationTimestamp)
 }
+
+func FilterPods(pods []api.Pod) []*api.Pod {
+	var result []*api.Pod
+	if len(pods) == 0 {
+		return result
+	}
+
+	switch pods[0].Spec.RestartPolicy {
+	case api.RestartPolicyAlways:
+		result = FilterActivePods(pods)
+		break
+	case api.RestartPolicyOnFailure:
+		result = FilterActiveAndSucceededPods(pods)
+		break
+	case api.RestartPolicyNever:
+		for _, pod := range pods {
+			result = append(result, &pod)
+		}
+		break
+	default:
+		glog.Errorf("unsupported restart policy %v\n", pods[0].Spec.RestartPolicy)
+	}
+	return result
+}
+
