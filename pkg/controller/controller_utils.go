@@ -595,6 +595,49 @@ func FilterActivePods(pods []api.Pod) []*api.Pod {
 	return result
 }
 
+func FilterActiveAndSucceededPods(pods []api.Pod) []*api.Pod {
+	var result []*api.Pod
+	for i := range pods {
+		p := pods[i]
+		if IsPodActiveOrSucceeded(p) {
+			result = append(result, &p)
+		} else {
+			glog.V(4).Infof("Ignoring failed pod %v/%v in state %v, deletion time %v",
+				p.Namespace, p.Name, p.Status.Phase, p.DeletionTimestamp)
+		}
+	}
+	return result
+}
+
+func FilterPods(pods []api.Pod) []*api.Pod {
+	var result []*api.Pod
+	if len(pods) == 0 {
+		return result
+	}
+
+	switch pods[0].Spec.RestartPolicy {
+	case api.RestartPolicyAlways:
+		result = FilterActivePods(pods)
+		break
+	case api.RestartPolicyOnFailure:
+		result = FilterActiveAndSucceededPods(pods)
+		break
+	case api.RestartPolicyNever:
+		for _, pod := range pods {
+			result = append(result, &pod)
+		}
+		break
+	default:
+		glog.Errorf("unsupported restart policy %v\n", pods[0].Spec.RestartPolicy)
+	}
+	return result
+}
+
+func IsPodActiveOrSucceeded(p api.Pod) bool {
+	return api.PodFailed != p.Status.Phase &&
+		p.DeletionTimestamp == nil
+}
+
 func IsPodActive(p api.Pod) bool {
 	return api.PodSucceeded != p.Status.Phase &&
 		api.PodFailed != p.Status.Phase &&
