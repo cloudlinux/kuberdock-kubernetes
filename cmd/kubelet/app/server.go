@@ -181,6 +181,7 @@ func UnsecuredKubeletConfig(s *options.KubeletServer) (*KubeletConfig, error) {
 	}
 
 	return &KubeletConfig{
+		ResourceMultipliers:       s.ResourceMultipliers,
 		Address:                   net.ParseIP(s.Address),
 		AllowPrivileged:           s.AllowPrivileged,
 		Auth:                      nil, // default does not enforce auth[nz]
@@ -330,7 +331,7 @@ func run(s *options.KubeletServer, kcfg *KubeletConfig) (err error) {
 			SystemCgroupsName:  kcfg.SystemCgroups,
 			KubeletCgroupsName: kcfg.KubeletCgroups,
 			ContainerRuntime:   kcfg.ContainerRuntime,
-		})
+		}, kcfg.ResourceMultipliers)
 		if err != nil {
 			return err
 		}
@@ -513,6 +514,7 @@ func SimpleKubelet(client *clientset.Clientset,
 	}
 
 	kcfg := KubeletConfig{
+		ResourceMultipliers:     api.ResourceMultipliers{CPUMultiplier: 1.0, MemoryMultiplier: 1.0},
 		Address:                 net.ParseIP(address),
 		CAdvisorInterface:       cadvisorInterface,
 		VolumeStatsAggPeriod:    time.Minute,
@@ -689,6 +691,7 @@ func makePodSourceConfig(kc *KubeletConfig) *config.PodConfig {
 // KubeletConfig is all of the parameters necessary for running a kubelet.
 // TODO: This should probably be merged with KubeletServer.  The extra object is a consequence of refactoring.
 type KubeletConfig struct {
+	ResourceMultipliers            api.ResourceMultipliers
 	Address                        net.IP
 	AllowPrivileged                bool
 	Auth                           server.AuthInterface
@@ -803,6 +806,7 @@ func CreateAndInitKubelet(kc *KubeletConfig) (k KubeletBootstrap, pc *config.Pod
 		pc = makePodSourceConfig(kc)
 	}
 	k, err = kubelet.NewMainKubelet(
+		kc.ResourceMultipliers,
 		kc.Hostname,
 		kc.NodeName,
 		kc.DockerClient,

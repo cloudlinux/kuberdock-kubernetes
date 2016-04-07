@@ -220,7 +220,7 @@ func (s *KubeletExecutorServer) runKubelet(
 		SystemCgroupsName:  kcfg.SystemCgroups,
 		KubeletCgroupsName: kcfg.KubeletCgroups,
 		ContainerRuntime:   kcfg.ContainerRuntime,
-	})
+	}, api.ResourceMultipliers{CPUMultiplier: 1.0, MemoryMultiplier: 1.0})
 	if err != nil {
 		return err
 	}
