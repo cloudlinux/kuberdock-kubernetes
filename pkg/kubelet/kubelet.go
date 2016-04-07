@@ -157,6 +157,7 @@ type Option func(*Kubelet)
 // New instantiates a new Kubelet object along with all the required internal modules.
 // No initialization of Kubelet and its modules should happen here.
 func NewMainKubelet(
+	resourceMultipliers api.ResourceMultipliers,
 	hostname string,
 	nodeName string,
 	dockerClient dockertools.DockerInterface,
@@ -289,6 +290,7 @@ func NewMainKubelet(
 	}
 
 	klet := &Kubelet{
+		resourceMultipliers:            resourceMultipliers,
 		hostname:                       hostname,
 		nodeName:                       nodeName,
 		dockerClient:                   dockerClient,
@@ -384,6 +386,7 @@ func NewMainKubelet(
 	case "docker":
 		// Only supported one for now, continue.
 		klet.containerRuntime = dockertools.NewDockerManager(
+			resourceMultipliers,
 			dockerClient,
 			kubecontainer.FilterEventRecorder(recorder),
 			klet.livenessManager,
@@ -528,13 +531,14 @@ type nodeLister interface {
 
 // Kubelet is the main kubelet implementation.
 type Kubelet struct {
-	hostname      string
-	nodeName      string
-	dockerClient  dockertools.DockerInterface
-	runtimeCache  kubecontainer.RuntimeCache
-	kubeClient    clientset.Interface
-	rootDirectory string
-	podWorkers    PodWorkers
+	resourceMultipliers api.ResourceMultipliers
+	hostname            string
+	nodeName            string
+	dockerClient        dockertools.DockerInterface
+	runtimeCache        kubecontainer.RuntimeCache
+	kubeClient          clientset.Interface
+	rootDirectory       string
+	podWorkers          PodWorkers
 
 	resyncInterval time.Duration
 	sourcesReady   SourcesReadyFn
@@ -2273,7 +2277,7 @@ func (kl *Kubelet) hasInsufficientfFreeResources(pods []*api.Pod) (bool, bool) {
 		// TODO: Should we admit the pod when machine info is unavailable?
 		return false, false
 	}
-	capacity := cadvisor.CapacityFromMachineInfo(info)
+	capacity := cadvisor.CapacityFromMachineInfo(info, kl.resourceMultipliers)
 	_, notFittingCPU, notFittingMemory := predicates.CheckPodsExceedingFreeResources(pods, capacity)
 	return len(notFittingCPU) > 0, len(notFittingMemory) > 0
 }
@@ -2869,7 +2873,7 @@ func (kl *Kubelet) setNodeStatusMachineInfo(node *api.Node) {
 	} else {
 		node.Status.NodeInfo.MachineID = info.MachineID
 		node.Status.NodeInfo.SystemUUID = info.SystemUUID
-		node.Status.Capacity = cadvisor.CapacityFromMachineInfo(info)
+		node.Status.Capacity = cadvisor.CapacityFromMachineInfo(info, kl.resourceMultipliers)
 		node.Status.Capacity[api.ResourcePods] = *resource.NewQuantity(
 			int64(kl.maxPods), resource.DecimalSI)
 		if node.Status.NodeInfo.BootID != "" &&

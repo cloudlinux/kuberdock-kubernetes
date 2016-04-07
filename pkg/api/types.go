@@ -1802,6 +1802,11 @@ const (
 // ResourceList is a set of (resource name, quantity) pairs.
 type ResourceList map[ResourceName]resource.Quantity
 
+type ResourceMultipliers struct {
+	CPUMultiplier    float32 `json:"cpuMultiplier"`
+	MemoryMultiplier float32 `json:"memoryMultiplier"`
+}
+
 // +genclient=true,nonNamespaced=true
 
 // Node is a worker node in Kubernetes

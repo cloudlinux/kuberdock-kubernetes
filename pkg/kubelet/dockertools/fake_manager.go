@@ -48,9 +48,10 @@ func NewFakeDockerManager(
 	fakeOOMAdjuster := oom.NewFakeOOMAdjuster()
 	fakeProcFs := procfs.NewFakeProcFS()
 	fakePodGetter := &fakePodGetter{}
-	dm := NewDockerManager(client, recorder, livenessManager, containerRefManager, fakePodGetter, machineInfo, podInfraContainerImage, qps,
-		burst, containerLogsDir, osInterface, networkPlugin, runtimeHelper, httpClient, &NativeExecHandler{},
-		fakeOOMAdjuster, fakeProcFs, false, imageBackOff, false, false, true)
+	resourceMultipliers := api.ResourceMultipliers{CPUMultiplier: 1.0, MemoryMultiplier: 1.0}
+	dm := NewDockerManager(resourceMultipliers, client, recorder, livenessManager, containerRefManager, fakePodGetter,
+		machineInfo, podInfraContainerImage, qps, burst, containerLogsDir, osInterface, networkPlugin, runtimeHelper,
+		httpClient, &NativeExecHandler{}, fakeOOMAdjuster, fakeProcFs, false, imageBackOff, false, false, true)
 	dm.dockerPuller = &FakeDockerPuller{}
 	return dm
 }

@@ -77,6 +77,7 @@ func newSystemCgroups(containerName string) *systemContainer {
 }
 
 type containerManagerImpl struct {
+	resourceMultipliers api.ResourceMultipliers
 	sync.RWMutex
 	cadvisorInterface cadvisor.Interface
 	mountUtil         mount.Interface
@@ -147,11 +148,16 @@ func validateSystemRequirements(mountUtil mount.Interface) (features, error) {
 // TODO(vmarmol): Add limits to the system containers.
 // Takes the absolute name of the specified containers.
 // Empty container name disables use of the specified container.
-func NewContainerManager(mountUtil mount.Interface, cadvisorInterface cadvisor.Interface, nodeConfig NodeConfig) (ContainerManager, error) {
+func NewContainerManager(
+	mountUtil mount.Interface,
+	cadvisorInterface cadvisor.Interface,
+	nodeConfig NodeConfig,
+	resourceMultipliers api.ResourceMultipliers) (ContainerManager, error) {
 	return &containerManagerImpl{
-		cadvisorInterface: cadvisorInterface,
-		mountUtil:         mountUtil,
-		NodeConfig:        nodeConfig,
+		resourceMultipliers: resourceMultipliers,
+		cadvisorInterface:   cadvisorInterface,
+		mountUtil:           mountUtil,
+		NodeConfig:          nodeConfig,
 	}, nil
 }
 
@@ -235,7 +241,7 @@ func (cm *containerManagerImpl) setupNode() error {
 			var capacity = api.ResourceList{}
 			if err != nil {
 			} else {
-				capacity = cadvisor.CapacityFromMachineInfo(info)
+				capacity = cadvisor.CapacityFromMachineInfo(info, cm.resourceMultipliers)
 			}
 			memoryLimit := (int64(capacity.Memory().Value() * DockerMemoryLimitThresholdPercent / 100))
 			if memoryLimit < MinDockerMemoryLimit {

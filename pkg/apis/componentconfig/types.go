@@ -16,7 +16,10 @@ limitations under the License.
 
 package componentconfig
 
-import "k8s.io/kubernetes/pkg/api/unversioned"
+import (
+	"k8s.io/kubernetes/pkg/api"
+	"k8s.io/kubernetes/pkg/api/unversioned"
+)
 
 type KubeProxyConfiguration struct {
 	unversioned.TypeMeta
@@ -98,6 +101,7 @@ const (
 
 // TODO: curate the ordering and structure of this config object
 type KubeletConfiguration struct {
+	ResourceMultipliers api.ResourceMultipliers `json:"resourceMultipliers"`
 	// config is the path to the config file or directory of files
 	Config string `json:"config"`
 	// syncFrequency is the max period between synchronizing running

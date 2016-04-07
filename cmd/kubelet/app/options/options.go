@@ -65,6 +65,7 @@ func NewKubeletServer() *KubeletServer {
 		SystemReserved: make(util.ConfigurationMap),
 		KubeReserved:   make(util.ConfigurationMap),
 		KubeletConfiguration: componentconfig.KubeletConfiguration{
+			ResourceMultipliers:         api.ResourceMultipliers{CPUMultiplier: 1.0, MemoryMultiplier: 1.0},
 			Address:                     "0.0.0.0",
 			CAdvisorPort:                4194,
 			VolumeStatsAggPeriod:        unversioned.Duration{time.Minute},
@@ -133,6 +134,8 @@ func NewKubeletServer() *KubeletServer {
 
 // AddFlags adds flags for a specific KubeletServer to the specified FlagSet
 func (s *KubeletServer) AddFlags(fs *pflag.FlagSet) {
+	fs.Float32Var(&s.ResourceMultipliers.CPUMultiplier, "cpu-multiplier", 1.0, "cpu multiplier")
+	fs.Float32Var(&s.ResourceMultipliers.MemoryMultiplier, "memory-multiplier", 1.0, "memory multiplier")
 	fs.StringVar(&s.Config, "config", s.Config, "Path to the config file or directory of files")
 	fs.DurationVar(&s.SyncFrequency.Duration, "sync-frequency", s.SyncFrequency.Duration, "Max period between synchronizing running containers and config")
 	fs.DurationVar(&s.FileCheckFrequency.Duration, "file-check-frequency", s.FileCheckFrequency.Duration, "Duration between checking config files for new data")

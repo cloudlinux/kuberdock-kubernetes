@@ -38,6 +38,7 @@ import (
 	"k8s.io/kubernetes/pkg/api"
 	"k8s.io/kubernetes/pkg/api/unversioned"
 	"k8s.io/kubernetes/pkg/client/record"
+	"k8s.io/kubernetes/pkg/kubelet/cadvisor"
 	kubecontainer "k8s.io/kubernetes/pkg/kubelet/container"
 	"k8s.io/kubernetes/pkg/kubelet/lifecycle"
 	"k8s.io/kubernetes/pkg/kubelet/metrics"
@@ -98,6 +99,7 @@ var (
 )
 
 type DockerManager struct {
+	resourceMultipliers api.ResourceMultipliers
 	client              DockerInterface
 	recorder            record.EventRecorder
 	containerRefManager *kubecontainer.RefManager
@@ -176,6 +178,7 @@ func PodInfraContainerEnv(env map[string]string) kubecontainer.Option {
 }
 
 func NewDockerManager(
+	resourceMultipliers api.ResourceMultipliers,
 	client DockerInterface,
 	recorder record.EventRecorder,
 	livenessManager proberesults.Manager,
@@ -213,6 +216,7 @@ func NewDockerManager(
 	}
 
 	dm := &DockerManager{
+		resourceMultipliers:    resourceMultipliers,
 		client:                 client,
 		recorder:               recorder,
 		containerRefManager:    containerRefManager,
@@ -1476,7 +1480,8 @@ func (dm *DockerManager) applyOOMScoreAdj(container *api.Container, containerInf
 	if containerInfo.Name == PodInfraContainerName {
 		oomScoreAdj = qos.PodInfraOOMAdj
 	} else {
-		oomScoreAdj = qos.GetContainerOOMScoreAdjust(container, int64(dm.machineInfo.MemoryCapacity))
+		memory := cadvisor.CapacityFromMachineInfo(dm.machineInfo, dm.resourceMultipliers)[api.ResourceMemory]
+		oomScoreAdj = qos.GetContainerOOMScoreAdjust(container, memory.Value())
 	}
 	if err = dm.oomAdjuster.ApplyOOMScoreAdjContainer(cgroupName, oomScoreAdj, 5); err != nil {
 		if err == os.ErrNotExist {
