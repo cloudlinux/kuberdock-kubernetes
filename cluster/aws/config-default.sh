@@ -13,11 +13,13 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
-ZONE=${KUBE_AWS_ZONE:-us-west-2a}
+SSH_USER="centos"
+TESTING="no"
+DEPLOY_SH=${DEPLOY_SH:-http://repo.cloudlinux.com/kubernetes/deploy.sh}
+ZONE=${KUBE_AWS_ZONE:-us-west-2b}
 MASTER_SIZE=${MASTER_SIZE:-}
 NODE_SIZE=${NODE_SIZE:-}
-NUM_NODES=${NUM_NODES:-4}
+NUM_NODES=${NUM_NODES:-2}
 
 # Dynamically set node sizes so that Heapster has enough space to run
 if [[ -z ${NODE_SIZE} ]]; then
@@ -63,11 +65,11 @@ DOCKER_STORAGE=${DOCKER_STORAGE:-aufs}
 # Extra docker options for nodes.
 EXTRA_DOCKER_OPTS="${EXTRA_DOCKER_OPTS:-}"
 
-INSTANCE_PREFIX="${KUBE_AWS_INSTANCE_PREFIX:-kubernetes}"
+INSTANCE_PREFIX="${KUBE_AWS_INSTANCE_PREFIX:-kuberdock}"
 CLUSTER_ID=${INSTANCE_PREFIX}
 AWS_SSH_KEY=${AWS_SSH_KEY:-$HOME/.ssh/kube_aws_rsa}
 IAM_PROFILE_MASTER="kubernetes-master"
-IAM_PROFILE_NODE="kubernetes-minion"
+IAM_PROFILE_NODE="kubernetes-node"
 
 LOG="/dev/null"
 
@@ -78,7 +80,7 @@ MASTER_ROOT_DISK_TYPE="${MASTER_ROOT_DISK_TYPE:-gp2}"
 MASTER_ROOT_DISK_SIZE=${MASTER_ROOT_DISK_SIZE:-8}
 # The minions root EBS volume size (used to house Docker images)
 NODE_ROOT_DISK_TYPE="${NODE_ROOT_DISK_TYPE:-gp2}"
-NODE_ROOT_DISK_SIZE=${NODE_ROOT_DISK_SIZE:-32}
+NODE_ROOT_DISK_SIZE=${NODE_ROOT_DISK_SIZE:-8}
 
 MASTER_NAME="${INSTANCE_PREFIX}-master"
 MASTER_TAG="${INSTANCE_PREFIX}-master"
@@ -141,7 +143,7 @@ ADMISSION_CONTROL=NamespaceLifecycle,LimitRanger,SecurityContextDeny,ServiceAcco
 ENABLE_NODE_PUBLIC_IP=${KUBE_ENABLE_NODE_PUBLIC_IP:-true}
 
 # OS options for minions
-KUBE_OS_DISTRIBUTION="${KUBE_OS_DISTRIBUTION:-jessie}"
+KUBE_OS_DISTRIBUTION="${KUBE_OS_DISTRIBUTION:-centos}"
 KUBE_NODE_IMAGE="${KUBE_NODE_IMAGE:-}"
 COREOS_CHANNEL="${COREOS_CHANNEL:-alpha}"
 CONTAINER_RUNTIME="${KUBE_CONTAINER_RUNTIME:-docker}"
