@@ -1,0 +1,9 @@
+Code-Review+2: Maksym Lobur <mlobur@cloudlinux.com>
+Verified+1: Maksym Lobur <mlobur@cloudlinux.com>
+Code-Review+2: Stanislav Sergiienko <ssergiienko@cloudlinux.com>
+Verified+1: Stanislav Sergiienko <ssergiienko@cloudlinux.com>
+Submitted-by: Maksym Lobur <mlobur@cloudlinux.com>
+Submitted-at: Mon, 11 Apr 2016 17:05:09 +0300
+Reviewed-on: http://gerrit.cloudlinux.com:8080/9087
+Project: kubernetes-kuberdock
+Branch: refs/heads/release-1.2-kuberdock
