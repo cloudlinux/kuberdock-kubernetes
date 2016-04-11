@@ -51,6 +51,7 @@ fi
 
 echo "... calling kube-up" >&2
 kube-up
+exit 0
 
 echo "... calling validate-cluster" >&2
 # Override errexit
