@@ -91,8 +91,6 @@ esac
 source "${KUBE_ROOT}/cluster/aws/${OS_DISTRIBUTION}/util.sh"
 }
 
-load_distro_utils
-
 # This removes the final character in bash (somehow)
 AWS_REGION=${ZONE%?}
 
@@ -293,6 +291,12 @@ function detect-security-groups {
   fi
 }
 
+function detect-minion-image() {
+  if [[ -z "${KUBE_NODE_IMAGE=-}" ]]; then
+    detect-image
+    KUBE_NODE_IMAGE=$AWS_IMAGE
+  fi
+}
 # Detects the AMI to use (considering the region)
 # This really should be in the various distro-specific util functions,
 # but CoreOS uses this for the master, so for now it is here.
@@ -302,29 +306,56 @@ function detect-security-groups {
 # Vars set:
 #   AWS_IMAGE
 function detect-image () {
-case "${OS_DISTRIBUTION}" in
-  trusty|coreos)
-    detect-trusty-image
-    ;;
-  vivid)
-    detect-vivid-image
-    ;;
-  wily)
-    detect-wily-image
-    ;;
-  wheezy)
-    detect-wheezy-image
-    ;;
-  jessie)
-    detect-jessie-image
-    ;;
-  *)
-    echo "Please specify AWS_IMAGE directly (distro ${OS_DISTRIBUTION} not recognized)"
-    exit 2
-    ;;
-esac
-}
+  # This is the centos 7 image for <region>, amd64, hvm:ebs-ssd
+  # This will need to be updated from time to time as amis are deprecated
+  if [[ -z "${AWS_IMAGE-}" ]]; then
+    case "${AWS_REGION}" in
+      ap-northeast-1)
+        AWS_IMAGE=ami-eec1c380
+        ;;
 
+      ap-northeast-2)
+        AWS_IMAGE=ami-c74789a9
+        ;;
+
+      ap-southeast-1)
+        AWS_IMAGE=ami-f068a193
+        ;;
+
+      ap-southeast-2)
+        AWS_IMAGE=ami-fedafc9d
+        ;;
+
+      eu-west-1)
+        AWS_IMAGE=ami-7abd0209
+        ;;
+
+      eu-central-1)
+        AWS_IMAGE=ami-9bf712f4
+        ;;
+
+      sa-east-1)
+        AWS_IMAGE=ami-26b93b4a
+        ;;
+
+      us-east-1)
+        AWS_IMAGE=ami-6d1c2007
+        ;;
+
+      us-west-1)
+        AWS_IMAGE=ami-af4333cf
+        ;;
+
+      us-west-2)
+        AWS_IMAGE=ami-d2c924b2
+        ;;
+
+      *)
+        echo "Please specify AWS_IMAGE directly (region not recognized)"
+        exit 1
+    esac
+  fi
+}
 # Detects the AMI to use for trusty (considering the region)
 # Used by CoreOS & Ubuntu
 #
@@ -894,6 +925,12 @@ function subnet-setup {
 }
 
 function kube-up {
+  # check if aws credentials are set up
+
+  if [ -z ${AWS_ACCESS_KEY_ID-} ] || [ -z ${AWS_SECRET_ACCESS_KEY-} ] ; then
+  echo "Please export AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY variables and re-run this script"
+  exit 1
+  fi
   echo "Starting cluster using os distro: ${OS_DISTRIBUTION}" >&2
 
   get-tokens
@@ -903,13 +940,7 @@ function kube-up {
 
   detect-root-device
 
-  find-release-tars
-
   ensure-temp-dir
-
-  create-bootstrap-script
-
-  upload-server-tars
 
   ensure-iam-profiles
 
@@ -998,19 +1029,60 @@ function kube-up {
     # Create the master
     start-master
 
-    # Build ~/.kube/config
-    build-config
-
     # Start minions
     start-minions
     wait-minions
+    echo "Kubernetes cluster created."
 
-    # Wait for the master to be ready
-    wait-master
+    detect-nodes
+    deploy-master
+    deploy-nodes
   fi
 
   # Check the cluster is OK
   check-cluster
+
+}
+function deploy-master(){
+    ssh -oStrictHostKeyChecking=no -i "${AWS_SSH_KEY}" -tt "${SSH_USER}@${KUBE_MASTER_IP}" "stty raw -echo; sudo yum -y update | cat" < <(cat) 2>"$LOG"
+    ssh -oStrictHostKeyChecking=no -i "${AWS_SSH_KEY}" -tt "${SSH_USER}@${KUBE_MASTER_IP}" "stty raw -echo; sudo yum -y install wget | cat" < <(cat) 2>"$LOG"
+    echo "Kubernetes cluster created."
+    # ssh -oStrictHostKeyChecking=no -i "${AWS_SSH_KEY}" -tt "${SSH_USER}@${KUBE_MASTER_IP}" "stty raw -echo; wget ${DEPLOY_SH} | cat" < <(cat) 2>"$LOG"
+    scp -oStrictHostKeyChecking=no -i "${AWS_SSH_KEY}" /tmp/deploy.sh ${SSH_USER}@${KUBE_MASTER_IP}:/home/${SSH_USER}/
+
+    if [[ ${TESTING} == "yes" ]]; then
+	ssh -oStrictHostKeyChecking=no -i "${AWS_SSH_KEY}" -tt "${SSH_USER}@${KUBE_MASTER_IP}" "sudo ROUTE_TABLE_ID=${ROUTE_TABLE_ID} AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID} AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY} bash -l deploy.sh -t" < <(cat) 2>"$LOG"
+    else
+	ssh -oStrictHostKeyChecking=no -i "${AWS_SSH_KEY}" -tt "${SSH_USER}@${KUBE_MASTER_IP}" "sudo ROUTE_TABLE_ID=${ROUTE_TABLE_ID} AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID} AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY} bash -l deploy.sh" < <(cat) 2>"$LOG"
+    fi
+
+    ssh -oStrictHostKeyChecking=no -i "${AWS_SSH_KEY}" -tt "${SSH_USER}@${KUBE_MASTER_IP}" mkdir /home/${SSH_USER}/kuberdock-files  2>"$LOG"
+    ssh -oStrictHostKeyChecking=no -i "${AWS_SSH_KEY}" -tt "${SSH_USER}@${KUBE_MASTER_IP}" cp /var/opt/kuberdock/{node_install.sh,pd.sh} /etc/pki/etcd/ca.crt /etc/pki/etcd/etcd-client.crt /etc/pki/etcd/etcd-client.key /home/${SSH_USER}/kuberdock-files 2>"$LOG"
+    ssh -oStrictHostKeyChecking=no -i "${AWS_SSH_KEY}" -tt "${SSH_USER}@${KUBE_MASTER_IP}" "sudo cp /var/lib/nginx/.ssh/id_rsa.pub /home/${SSH_USER}/kuberdock-files" 2>"$LOG"
+    ssh -oStrictHostKeyChecking=no -i "${AWS_SSH_KEY}" -tt "${SSH_USER}@${KUBE_MASTER_IP}" "sudo chown ${SSH_USER} /home/${SSH_USER}/kuberdock-files/*" < <(cat) 2>"$LOG"
+
+    scp -q -r -i "${AWS_SSH_KEY}"  ${SSH_USER}@${KUBE_MASTER_IP}:/home/${SSH_USER}/kuberdock-files ${KUBE_ROOT}
+
+    CUR_MASTER_KUBERNETES=$(ssh -oStrictHostKeyChecking=no -i "${AWS_SSH_KEY}" "${SSH_USER}@${KUBE_MASTER_IP}" rpm -q kubernetes-master --qf "%{version}-%{release}")
+}
+
+function deploy-nodes() {
+    for (( i=0; i<${#NODE_NAMES[@]}; i++)); do
+    NODE_HOSTNAME=$(ssh -oStrictHostKeyChecking=no -i "${AWS_SSH_KEY}" "${SSH_USER}@${KUBE_NODE_IP_ADDRESSES[$i]}" hostname -f)
+      echo "Configuring node ${NODE_HOSTNAME}"
+      scp -oStrictHostKeyChecking=no -i "${AWS_SSH_KEY}" -q -r ${KUBE_ROOT}/kuberdock-files ${SSH_USER}@${KUBE_NODE_IP_ADDRESSES[$i]}:/home/${SSH_USER}/
+      ssh -oStrictHostKeyChecking=no -i "${AWS_SSH_KEY}" -tt "${SSH_USER}@${KUBE_NODE_IP_ADDRESSES[$i]}" "sudo cp /home/${SSH_USER}/kuberdock-files/* /" < <(cat) 2>"$LOG"
+      ssh -oStrictHostKeyChecking=no -i "${AWS_SSH_KEY}" -tt "${SSH_USER}@${KUBE_NODE_IP_ADDRESSES[$i]}" "sudo mkdir -p /var/lib/kuberdock/scripts" < <(cat) 2>"$LOG"
+      ssh -oStrictHostKeyChecking=no -i "${AWS_SSH_KEY}" -tt "${SSH_USER}@${KUBE_NODE_IP_ADDRESSES[$i]}" "sudo cp /id_rsa.pub /root/.ssh/authorized_keys" < <(cat) 2>"$LOG"
+      echo "Adding node"
+      if [[ ${TESTING} == "yes" ]]; then
+      ssh -oStrictHostKeyChecking=no -i "${AWS_SSH_KEY}" -tt "${SSH_USER}@${KUBE_MASTER_IP}" "sudo python /var/opt/kuberdock/manage.py add_node --hostname=${NODE_HOSTNAME} --kube-type=0 --do-deploy --testing" < <(cat) 2>"$LOG"
+      else
+      ssh -oStrictHostKeyChecking=no -i "${AWS_SSH_KEY}" -tt "${SSH_USER}@${KUBE_MASTER_IP}" "sudo python /var/opt/kuberdock/manage.py add_node --hostname=${NODE_HOSTNAME} --kube-type=0 --do-deploy" < <(cat) 2>"$LOG"
+      fi
+    done
+
+      rm -rf ${KUBE_ROOT}/kuberdock-files
 }
 
 # Builds the bootstrap script and saves it to a local temp file
@@ -1066,18 +1138,8 @@ function start-master() {
     echo "API_SERVERS: $(yaml-quote ${MASTER_INTERNAL_IP:-})"
     echo "__EOF_MASTER_KUBE_ENV_YAML"
     echo ""
-    echo "wget -O bootstrap ${BOOTSTRAP_SCRIPT_URL}"
-    echo "chmod +x bootstrap"
     echo "mkdir -p /etc/kubernetes"
     echo "mv kube_env.yaml /etc/kubernetes"
-    echo "mv bootstrap /etc/kubernetes/"
-    echo "cat > /etc/rc.local << EOF_RC_LOCAL"
-    echo "#!/bin/sh -e"
-    # We want to be sure that we don't pass an argument to bootstrap
-    echo "/etc/kubernetes/bootstrap"
-    echo "exit 0"
-    echo "EOF_RC_LOCAL"
-    echo "/etc/kubernetes/bootstrap"
   ) > "${KUBE_TEMP}/master-user-data"
 
   # Compress the data to fit under the 16KB limit (cloud-init accepts compressed data)
@@ -1161,18 +1223,8 @@ function start-minions() {
     echo "API_SERVERS: $(yaml-quote ${MASTER_INTERNAL_IP:-})"
     echo "__EOF_KUBE_ENV_YAML"
     echo ""
-    echo "wget -O bootstrap ${BOOTSTRAP_SCRIPT_URL}"
-    echo "chmod +x bootstrap"
     echo "mkdir -p /etc/kubernetes"
     echo "mv kube_env.yaml /etc/kubernetes"
-    echo "mv bootstrap /etc/kubernetes/"
-    echo "cat > /etc/rc.local << EOF_RC_LOCAL"
-    echo "#!/bin/sh -e"
-    # We want to be sure that we don't pass an argument to bootstrap
-    echo "/etc/kubernetes/bootstrap"
-    echo "exit 0"
-    echo "EOF_RC_LOCAL"
-    echo "/etc/kubernetes/bootstrap"
   ) > "${KUBE_TEMP}/node-user-data"
 
   # Compress the data to fit under the 16KB limit (cloud-init accepts compressed data)
@@ -1279,7 +1331,20 @@ function build-config() {
   )
 }
 
+function check-minion() {
+  local minion_ip=$1
+
+  local output=$(ssh -oStrictHostKeyChecking=no -tt -i "${AWS_SSH_KEY}" ${SSH_USER}@$minion_ip sudo docker ps -a 2>/dev/null)
+  if [[ -z "${output}" ]]; then
+    ssh -oStrictHostKeyChecking=no -tt -i "${AWS_SSH_KEY}" ${SSH_USER}@$minion_ip sudo service docker start > $LOG 2>&1
+    echo "not working yet"
+  else
+    echo "working"
+  fi
+}
+
 # Sanity check the cluster and print confirmation messages
+
 function check-cluster() {
   echo "Sanity checking cluster..."
 
@@ -1317,15 +1382,10 @@ function check-cluster() {
       done
   done
 
-  # ensures KUBECONFIG is set
-  get-kubeconfig-basicauth
   echo
-  echo -e "${color_green}Kubernetes cluster is running.  The master is running at:"
+  echo -e "${color_green}KuberDock cluster is running.  The master is running at:"
   echo
   echo -e "${color_yellow}  https://${KUBE_MASTER_IP}"
-  echo
-  echo -e "${color_green}The user name and password to use is located in ${KUBECONFIG}.${color_norm}"
-  echo
 }
 
 function kube-down {
