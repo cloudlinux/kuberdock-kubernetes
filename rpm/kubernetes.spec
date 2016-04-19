@@ -31,7 +31,7 @@
 %global con_commit          81f6fc52617bf1cf02680f1a768b019ddf16c42b
 %global con_shortcommit     %(c=%{con_commit}; echo ${c:0:7})
 
-%global kube_version          1.2.1
+%global kube_version          1.2.2
 %global kube_git_version      v%{kube_version}
 
 #I really need this, otherwise "version_ldflags=$(kube::version_ldflags)"
