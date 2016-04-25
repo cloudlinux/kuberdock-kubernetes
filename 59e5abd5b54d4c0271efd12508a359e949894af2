@@ -1,0 +1,7 @@
+Code-Review+2: Maksym Lobur <mlobur@cloudlinux.com>
+Verified+1: Maksym Lobur <mlobur@cloudlinux.com>
+Submitted-by: Maksym Lobur <mlobur@cloudlinux.com>
+Submitted-at: Mon, 25 Apr 2016 12:21:32 +0300
+Reviewed-on: http://gerrit.cloudlinux.com:8080/9246
+Project: kubernetes-kuberdock
+Branch: refs/heads/release-1.2-aws-kd-deploy
