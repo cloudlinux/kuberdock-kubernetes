@@ -712,6 +712,49 @@ func PodFitsHostPorts(pod *api.Pod, nodeName string, nodeInfo *schedulercache.No
 	return true, nil
 }
 
+type PublicIPFit struct {
+	nodeInfo NodeInfo
+}
+
+func NewPublicIPFitPredicate(nodeInfo NodeInfo) algorithm.FitPredicate {
+	publicIP := &PublicIPFit{
+		nodeInfo: nodeInfo
+	}
+	return publicIP.PodFitsPublicIPs
+}
+
+func (p *PublicIPFit) PodFitsPublicIPs(pod *api.Pod, nodeName string, nodeInfo *shcedulercache.NodeInfo) (bool, error) {
+	kdPodPorts, err := api.GetKuberdockPodPortsFromAnnotations(pod.Annotations)
+	if err != nil {
+		return false, err
+	}
+	var ipNeeded bool
+	for _, podPorts := range kdPodPorts {
+		for _, podPort := range podPorts {
+			if podPort.IsPublic {
+				ipNeeded = true
+				break
+			}
+		}
+	}
+	if !ipNeeded {
+		return true, nil
+	}
+
+	node, err := p.nodeInfo.GetNodeInfo(nodeName)
+	if err != nil {
+		return false, err
+	}
+	kdFreeIPCount, err := api.GetKuberdockFreeIPCountFromAnnotations(node.Annotations)
+	if err != nil {
+		return false, nil
+	}
+	if kdFreeIPCount > 0 {
+		return true, nil
+	}
+	return false, nil
+}
+
 func getUsedPorts(pods ...*api.Pod) map[int]bool {
 	ports := make(map[int]bool)
 	for _, pod := range pods {

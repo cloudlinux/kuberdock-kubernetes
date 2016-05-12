@@ -153,6 +153,17 @@ const (
 	TerminationMessagePathDefault string = "/dev/termination-log"
 )
 
+type KDPodPort struct {
+	IsPublic      bool   `json:isPublic`
+	Protocol      string `json:protocol`
+	ContainerPort int    `json:containerPort`
+	HostPort      int    `json:hostPort`
+}
+
+type KDPodPorts []KDPodPort
+
+type KuberdockPodPorts []KDPodPorts
+
 // Volume represents a named volume in a pod that may be accessed by any containers in the pod.
 type Volume struct {
 	// Required: This must be a DNS_LABEL.  Each volume in a pod must have

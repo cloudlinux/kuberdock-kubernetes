@@ -23,6 +23,7 @@ import (
 	"reflect"
 	"strings"
 	"time"
+    "strconv"
 
 	"k8s.io/kubernetes/pkg/api/resource"
 	"k8s.io/kubernetes/pkg/api/unversioned"
@@ -400,4 +401,31 @@ func GetAffinityFromPodAnnotations(annotations map[string]string) (Affinity, err
 		}
 	}
 	return affinity, nil
+}
+
+const KuberdockPodPortsAnnotationKey = "kuberdock-pod-ports"
+
+func GetKuberdockPodPortsFromAnnotations(annotaions map[string]string) (KuberdockPodPorts, error) {
+	var podPorts KuberdockPodPorts
+	if len(annotations) > 0 && annotations[KuberdockPodPortsAnnotationKey] != "" {
+		err := json.Unmarshal([]byte(annotations[KuberdockPodPortsAnnotationKey]), &podPorts)
+		if err != nil {
+			return podPorts, err
+		}
+	}
+	return podPorts, nil
+}
+
+const KuberdockFreeIPCountAnnotationKey = "kuberdock-free-ips-count"
+
+const GetKuberdockFreeIPCountFromAnnotations(annotations map[string]string) (int, err) {
+    var freeIPCount int
+    if len(annotations) > 0 && annotations[KuberdockFreeIPCountAnnotationKey] != "" {
+        var err error
+        freeIPCount, err = strconv.Atoi(annotations[KuberdockFreeIPCountAnnotationKey])
+        if err != nil {
+            return freeIPCount, err
+        }
+    }
+    return freeIPCount, nil
 }

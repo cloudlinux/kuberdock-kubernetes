@@ -106,6 +106,50 @@ func newResourcePod(usage ...resourceRequest) *api.Pod {
 	}
 }
 
+func TestPodFitsFreeIPs(t *testing.T) {
+	enoughTests := []struct{
+		pod *api.Pod
+		nodeInfo *api.Node
+		fits bool
+		test string
+	}{
+		{
+			pod: &api.Pod{
+				ObjectMeta: api.ObjectMeta{
+					Annotations: map[string]string{
+						api.KuberdockPodPortsAnnotationKey:
+						`[
+							[{"isPublic": false, "protocol": "tcp", "containerPort": 443, "hostPort": null}],
+							[{"isPublic": true, "protocol": "tcp", "containerPort": 80, "hostPort": null}]
+						]`
+					},
+				}
+			},
+			nodeInfo: &api.Node{
+				ObjectMeta: api.ObjectMeta{
+					Annotations: map[string]string{
+						api.KuberdockFreeIPsCountAnnotationKey:
+						"2"
+					},
+				}
+			},
+			fits: true,
+			test: "public ip fits",
+		}
+	}
+
+	for _, test := range enoughTests {
+		fit := NewPublicIPFitPredicate(FakeNodeInfo(test.nodeInfo))
+		fits, err := fit(test.Pod, "machine", schedulercache.NewNodeInfo())
+		if err != nil {
+			t.Errorf("%s: unexpected error - %+v", test.test, err)
+		}
+		if fits != test.fits {
+			t.Errorf("%s: unexpected error - %+v", test.test, err)
+		}
+	}
+}
+
 func TestPodFitsResources(t *testing.T) {
 	enoughPodsTests := []struct {
 		pod      *api.Pod

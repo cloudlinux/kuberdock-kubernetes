@@ -81,6 +81,13 @@ func init() {
 
 func defaultPredicates() sets.String {
 	return sets.NewString(
+		// Fit is determined by free public IPs availability
+		factory.RegisterFitPredicateFactory(
+			"PodFitsFreeIPs",
+			func(args factory.PluginFactoryArgs) algorithm.FitPredicate {
+				return predicates.NewPublicIPFitPredicate(args.NodeInfo)
+			},
+		),
 		// Fit is defined based on the absence of port conflicts.
 		factory.RegisterFitPredicate("PodFitsHostPorts", predicates.PodFitsHostPorts),
 		// Fit is determined by resource availability.
