@@ -712,6 +712,46 @@ func PodFitsHostPorts(pod *api.Pod, nodeName string, nodeInfo *schedulercache.No
 	return true, nil
 }
 
+type PublicIPFit struct {
+	enabled  bool
+	nodeInfo NodeInfo
+}
+
+func NewPublicIPFitPredicate(enabled bool, nodeInfo NodeInfo) algorithm.FitPredicate {
+	publicIP := &PublicIPFit{
+		enabled:  enabled,
+		nodeInfo: nodeInfo,
+	}
+	return publicIP.PodFitsPublicIPs
+}
+
+func (p *PublicIPFit) PodFitsPublicIPs(pod *api.Pod, nodeName string, nodeInfo *schedulercache.NodeInfo) (bool, error) {
+	if !p.enabled || !api.IsKDPublicIPNeededFromLabels(pod.GetLabels()) {
+		return true, nil
+	}
+
+	ipRequested, err := api.IsKDPublicIPRequestedFromAnnotations(pod.GetAnnotations())
+	if err != nil {
+		return false, err
+	}
+	if !ipRequested {
+		return true, nil
+	}
+
+	node, err := p.nodeInfo.GetNodeInfo(nodeName)
+	if err != nil {
+		return false, err
+	}
+	kdFreeIPCount, err := api.GetKDFreeIPCountFromAnnotations(node.GetAnnotations())
+	if err != nil {
+		return false, err
+	}
+	if kdFreeIPCount > 0 {
+		return true, nil
+	}
+	return false, newInsufficientResourceError(publicIPResourceName, 1, 0, int64(kdFreeIPCount))
+}
+
 func getUsedPorts(pods ...*api.Pod) map[int]bool {
 	ports := make(map[int]bool)
 	for _, pod := range pods {

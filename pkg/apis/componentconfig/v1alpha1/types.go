@@ -85,6 +85,8 @@ const (
 type KubeSchedulerConfiguration struct {
 	unversioned.TypeMeta
 
+	// enable kuberdock non-floating ips logic
+	NonFloatingIPEnabled bool `json:nonFloatingIPEnabled`
 	// port is the port that the scheduler's http service runs on.
 	Port int `json:"port"`
 	// address is the IP address to serve on.
