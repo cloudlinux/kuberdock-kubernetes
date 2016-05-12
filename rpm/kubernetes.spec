@@ -625,9 +625,6 @@ getent passwd kube >/dev/null || useradd -r -g kube -d / -s /sbin/nologin \
 
 
 %changelog
-* Mon Apr 27 2016 Max Lobur <mlobur@cloudlinux.com> - 1.2.3-1.cloudlinux
-- update to 1.2.3
-
 * Mon Apr 04 2016 Sergey Fokin <sfokin@cloudlinux.com> - 1.2.1-1.cloudlinux
 - update to 1.2.1
 - add contrib form 81f6fc52617bf1cf02680f1a768b019ddf16c42b commit

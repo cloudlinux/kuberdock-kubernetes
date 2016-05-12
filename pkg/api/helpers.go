@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
+	"strconv"
 	"strings"
 	"time"
 
@@ -400,4 +401,54 @@ func GetAffinityFromPodAnnotations(annotations map[string]string) (Affinity, err
 		}
 	}
 	return affinity, nil
+}
+
+const KuberdockPodPortsAnnotationKey = "kuberdock-pod-ports"
+
+func GetKDPodPortsFromAnnotations(annotations map[string]string) (KuberdockPodPorts, error) {
+	var podPorts KuberdockPodPorts
+	if len(annotations) > 0 && annotations[KuberdockPodPortsAnnotationKey] != "" {
+		err := json.Unmarshal([]byte(annotations[KuberdockPodPortsAnnotationKey]), &podPorts)
+		if err != nil {
+			return podPorts, err
+		}
+	}
+	return podPorts, nil
+}
+
+const KuberdockFreeIPCountAnnotationKey = "kuberdock-free-ips-count"
+
+func GetKDFreeIPCountFromAnnotations(annotations map[string]string) (int, error) {
+	var freeIPCount int
+	if len(annotations) > 0 && annotations[KuberdockFreeIPCountAnnotationKey] != "" {
+		var err error
+		freeIPCount, err = strconv.Atoi(annotations[KuberdockFreeIPCountAnnotationKey])
+		if err != nil {
+			return freeIPCount, err
+		}
+	}
+	return freeIPCount, nil
+}
+
+func IsKDPublicIPRequestedFromAnnotations(annotations map[string]string) (bool, error) {
+	kdPodPorts, err := GetKDPodPortsFromAnnotations(annotations)
+	if err != nil {
+		return false, err
+	}
+	var ipNeeded bool
+	for _, podPorts := range kdPodPorts {
+		for _, podPort := range podPorts {
+			if podPort.IsPublic {
+				ipNeeded = true
+				break
+			}
+		}
+	}
+	return ipNeeded, nil
+}
+
+const KuberdockPublicIPLabelsKey = "kuberdock-public-ip"
+
+func IsKDPublicIPNeededFromLabels(labels map[string]string) bool {
+	return labels[KuberdockPublicIPLabelsKey] == "true"
 }

@@ -22,6 +22,7 @@ const (
 	podCountResourceName string = "PodCount"
 	cpuResourceName      string = "CPU"
 	memoryResoureceName  string = "Memory"
+	publicIPResourceName string = "PublicIP"
 )
 
 // InsufficientResourceError is an error type that indicates what kind of resource limit is
