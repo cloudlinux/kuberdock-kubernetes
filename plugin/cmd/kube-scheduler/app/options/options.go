@@ -50,6 +50,7 @@ func NewSchedulerServer() *SchedulerServer {
 
 // AddFlags adds flags for a specific SchedulerServer to the specified FlagSet
 func (s *SchedulerServer) AddFlags(fs *pflag.FlagSet) {
+	fs.BoolVar(&s.NonFloatingIPEnabled, "enable-non-floating-ip", s.NonFloatingIPEnabled, "Enable kuberdock non-floating ip logic")
 	fs.IntVar(&s.Port, "port", s.Port, "The port that the scheduler's http service runs on")
 	fs.StringVar(&s.Address, "address", s.Address, "The IP address to serve on (set to 0.0.0.0 for all interfaces)")
 	fs.StringVar(&s.AlgorithmProvider, "algorithm-provider", s.AlgorithmProvider, "The scheduling algorithm provider to use, one of: "+factory.ListAlgorithmProviders())
