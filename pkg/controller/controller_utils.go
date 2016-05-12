@@ -628,7 +628,7 @@ func FilterPods(pods []api.Pod) []*api.Pod {
 		}
 		break
 	default:
-		glog.Errorf("unsupported restart policy %v\n", pods[0].Spec.RestartPolicy)
+		glog.Errorf("unsupported restart policy: %v\n", pods[0].Spec.RestartPolicy)
 	}
 	return result
 }
