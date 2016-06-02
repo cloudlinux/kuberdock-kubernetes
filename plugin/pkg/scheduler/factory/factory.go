@@ -51,6 +51,8 @@ const (
 // ConfigFactory knows how to fill out a scheduler config with its support functions.
 type ConfigFactory struct {
 	Client *client.Client
+	// enable kuberdock non-floating ip logic
+	NonFloatingIPEnabled bool
 	// queue for pods that need scheduling
 	PodQueue *cache.FIFO
 	// a means to list all known scheduled pods.
@@ -83,11 +85,12 @@ type ConfigFactory struct {
 }
 
 // Initializes the factory.
-func NewConfigFactory(client *client.Client, schedulerName string) *ConfigFactory {
+func NewConfigFactory(client *client.Client, nfIPEnabled bool, schedulerName string) *ConfigFactory {
 	c := &ConfigFactory{
-		Client:             client,
-		PodQueue:           cache.NewFIFO(cache.MetaNamespaceKeyFunc),
-		ScheduledPodLister: &cache.StoreToPodLister{},
+		NonFloatingIPEnabled: nfIPEnabled,
+		Client:               client,
+		PodQueue:             cache.NewFIFO(cache.MetaNamespaceKeyFunc),
+		ScheduledPodLister:   &cache.StoreToPodLister{},
 		// Only nodes in the "Ready" condition with status == "True" are schedulable
 		NodeLister:       &cache.StoreToNodeLister{Store: cache.NewStore(cache.MetaNamespaceKeyFunc)},
 		PVLister:         &cache.StoreToPVFetcher{Store: cache.NewStore(cache.MetaNamespaceKeyFunc)},
@@ -189,10 +192,11 @@ func (f *ConfigFactory) CreateFromConfig(policy schedulerapi.Policy) (*scheduler
 func (f *ConfigFactory) CreateFromKeys(predicateKeys, priorityKeys sets.String, extenders []algorithm.SchedulerExtender) (*scheduler.Config, error) {
 	glog.V(2).Infof("creating scheduler with fit predicates '%v' and priority functions '%v", predicateKeys, priorityKeys)
 	pluginArgs := PluginFactoryArgs{
-		PodLister:        f.PodLister,
-		ServiceLister:    f.ServiceLister,
-		ControllerLister: f.ControllerLister,
-		ReplicaSetLister: f.ReplicaSetLister,
+		NonFloatingIPEnabled: f.NonFloatingIPEnabled,
+		PodLister:            f.PodLister,
+		ServiceLister:        f.ServiceLister,
+		ControllerLister:     f.ControllerLister,
+		ReplicaSetLister:     f.ReplicaSetLister,
 		// All fit predicates only need to consider schedulable nodes.
 		NodeLister: f.NodeLister.NodeCondition(getNodeConditionPredicate()),
 		NodeInfo:   &predicates.CachedNodeInfo{f.NodeLister},
