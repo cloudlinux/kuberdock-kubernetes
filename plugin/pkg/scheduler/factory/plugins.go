@@ -33,6 +33,7 @@ import (
 
 // PluginFactoryArgs are passed to all plugin factory functions.
 type PluginFactoryArgs struct {
+	NonFloatingIPEnabled bool
 	PodLister        algorithm.PodLister
 	ServiceLister    algorithm.ServiceLister
 	ControllerLister algorithm.ControllerLister

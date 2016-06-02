@@ -20,10 +20,13 @@ package scheduler
 // contrib/mesos/pkg/scheduler/.
 
 import (
+	"fmt"
+	"strconv"
 	"time"
 
 	"k8s.io/kubernetes/pkg/api"
 	"k8s.io/kubernetes/pkg/client/record"
+	client "k8s.io/kubernetes/pkg/client/unversioned"
 	"k8s.io/kubernetes/pkg/util/wait"
 	"k8s.io/kubernetes/plugin/pkg/scheduler/algorithm"
 	"k8s.io/kubernetes/plugin/pkg/scheduler/metrics"
@@ -69,6 +72,9 @@ type Scheduler struct {
 }
 
 type Config struct {
+	Client *client.Client
+	// Enable kuberdock non-floating ip logic
+	NonFloatingIPEnabled bool
 	// It is expected that changes made via modeler will be observed
 	// by NodeLister and Algorithm.
 	Modeler    SystemModeler
@@ -104,6 +110,9 @@ func New(c *Config) *Scheduler {
 
 // Run begins watching and scheduling. It starts a goroutine and returns immediately.
 func (s *Scheduler) Run() {
+	if s.config.NonFloatingIPEnabled {
+		glog.V(0).Infoln("Scheduler running in non-floating ip mode")
+	}
 	go wait.Until(s.scheduleOne, 0, s.config.StopEverything)
 }
 
@@ -148,5 +157,43 @@ func (s *Scheduler) scheduleOne() {
 		s.config.Modeler.AssumePod(&assumed)
 	})
 
+	if s.config.NonFloatingIPEnabled && api.IsKDPublicIPNeededFromLabels(pod.GetLabels()) {
+		if err := s.increaseKDNodePublicIPCount(pod, dest, -1); err != nil {
+			glog.Errorf("Changing node %q public ip count failed: %+v", dest, err)
+		}
+	}
+
 	metrics.E2eSchedulingLatency.Observe(metrics.SinceInMicroseconds(start))
+}
+
+func (s *Scheduler) increaseKDNodePublicIPCount(pod *api.Pod, nodeName string, i int) error {
+	ipNeeded, err := api.IsKDPublicIPRequestedFromAnnotations(pod.GetAnnotations())
+	if err != nil {
+		return err
+	}
+	if !ipNeeded {
+		return nil
+	}
+
+	node, err := s.config.Client.Nodes().Get(nodeName)
+	if err != nil {
+		return err
+	}
+	annotations := node.GetAnnotations()
+	ipCount, err := api.GetKDFreeIPCountFromAnnotations(annotations)
+	if err != nil {
+		return err
+	}
+	ipCount += i
+	if ipCount < 0 {
+		return fmt.Errorf("Tried to set %d to free public ip count", ipCount)
+	}
+	annotations[api.KuberdockFreeIPCountAnnotationKey] = strconv.Itoa(ipCount)
+	node.SetAnnotations(annotations)
+	_, err = s.config.Client.Nodes().Update(node)
+	if err != nil {
+		glog.Warningf("Update node failed: %+v; retrying", err)
+		go s.increaseKDNodePublicIPCount(pod, nodeName, i)
+	}
+	return nil
 }
