@@ -38,8 +38,8 @@ import (
 	"k8s.io/kubernetes/pkg/api"
 	"k8s.io/kubernetes/pkg/api/unversioned"
 	"k8s.io/kubernetes/pkg/client/record"
-	"k8s.io/kubernetes/pkg/kubelet/cadvisor"
 	kubecontainer "k8s.io/kubernetes/pkg/kubelet/container"
+	"k8s.io/kubernetes/pkg/kubelet/kdplugins"
 	"k8s.io/kubernetes/pkg/kubelet/lifecycle"
 	"k8s.io/kubernetes/pkg/kubelet/metrics"
 	"k8s.io/kubernetes/pkg/kubelet/network"
@@ -99,7 +99,8 @@ var (
 )
 
 type DockerManager struct {
-	resourceMultipliers api.ResourceMultipliers
+	kdHookPlugin        *kdplugins.KDHookPlugin
+	resourceMultiliers  api.ResourceMultipliers
 	client              DockerInterface
 	recorder            record.EventRecorder
 	containerRefManager *kubecontainer.RefManager
@@ -178,6 +179,7 @@ func PodInfraContainerEnv(env map[string]string) kubecontainer.Option {
 }
 
 func NewDockerManager(
+	kdHookPlugin *kdplugins.KDHookPlugin,
 	resourceMultipliers api.ResourceMultipliers,
 	client DockerInterface,
 	recorder record.EventRecorder,
@@ -216,7 +218,7 @@ func NewDockerManager(
 	}
 
 	dm := &DockerManager{
-		resourceMultipliers:    resourceMultipliers,
+		kdHookPlugin:           kdHookPlugin,
 		client:                 client,
 		recorder:               recorder,
 		containerRefManager:    containerRefManager,
@@ -635,6 +637,7 @@ func (dm *DockerManager) runContainer(
 		return kubecontainer.ContainerID{}, err
 	}
 	dm.recorder.Eventf(ref, api.EventTypeNormal, kubecontainer.CreatedContainer, "Created container with docker id %v", utilstrings.ShortenString(dockerContainer.ID, 12))
+	dm.kdHookPlugin.OnContainerCreatedInPod(container, pod)
 
 	if err = dm.client.StartContainer(dockerContainer.ID, nil); err != nil {
 		dm.recorder.Eventf(ref, api.EventTypeWarning, kubecontainer.FailedToStartContainer,
@@ -1233,6 +1236,9 @@ func (dm *DockerManager) GetContainerIP(containerID, interfaceName string) (stri
 // been extract from new labels and stored in pod status.
 func (dm *DockerManager) KillPod(pod *api.Pod, runningPod kubecontainer.Pod) error {
 	result := dm.killPodWithSyncResult(pod, runningPod)
+	if result.Error() == nil {
+		dm.kdHookPlugin.OnPodKilled(pod)
+	}
 	return result.Error()
 }
 
@@ -1483,8 +1489,7 @@ func (dm *DockerManager) applyOOMScoreAdj(container *api.Container, containerInf
 	if containerInfo.Name == PodInfraContainerName {
 		oomScoreAdj = qos.PodInfraOOMAdj
 	} else {
-		memory := cadvisor.CapacityFromMachineInfo(dm.machineInfo, dm.resourceMultipliers)[api.ResourceMemory]
-		oomScoreAdj = qos.GetContainerOOMScoreAdjust(container, memory.Value())
+		oomScoreAdj = qos.GetContainerOOMScoreAdjust(container, int64(dm.machineInfo.MemoryCapacity))
 	}
 	if err = dm.oomAdjuster.ApplyOOMScoreAdjContainer(cgroupName, oomScoreAdj, 5); err != nil {
 		if err == os.ErrNotExist {
