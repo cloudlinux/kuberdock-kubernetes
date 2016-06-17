@@ -52,6 +52,7 @@ import (
 	kubecontainer "k8s.io/kubernetes/pkg/kubelet/container"
 	"k8s.io/kubernetes/pkg/kubelet/dockertools"
 	"k8s.io/kubernetes/pkg/kubelet/envvars"
+	"k8s.io/kubernetes/pkg/kubelet/kdplugins"
 	"k8s.io/kubernetes/pkg/kubelet/metrics"
 	"k8s.io/kubernetes/pkg/kubelet/network"
 	"k8s.io/kubernetes/pkg/kubelet/pleg"
@@ -290,6 +291,7 @@ func NewMainKubelet(
 	}
 
 	klet := &Kubelet{
+		kdHookPlugin:                   &kdplugins.KDHookPlugin{},
 		resourceMultipliers:            resourceMultipliers,
 		hostname:                       hostname,
 		nodeName:                       nodeName,
@@ -386,6 +388,7 @@ func NewMainKubelet(
 	case "docker":
 		// Only supported one for now, continue.
 		klet.containerRuntime = dockertools.NewDockerManager(
+			klet.kdHookPlugin,
 			resourceMultipliers,
 			dockerClient,
 			kubecontainer.FilterEventRecorder(recorder),
@@ -455,7 +458,7 @@ func NewMainKubelet(
 	klet.imageManager = imageManager
 
 	klet.runner = klet.containerRuntime
-	klet.statusManager = status.NewManager(kubeClient, klet.podManager)
+	klet.statusManager = status.NewManager(klet.kdHookPlugin, kubeClient, klet.podManager)
 
 	klet.probeManager = prober.NewManager(
 		klet.statusManager,
@@ -531,6 +534,7 @@ type nodeLister interface {
 
 // Kubelet is the main kubelet implementation.
 type Kubelet struct {
+	kdHookPlugin        *kdplugins.KDHookPlugin
 	resourceMultipliers api.ResourceMultipliers
 	hostname            string
 	nodeName            string
