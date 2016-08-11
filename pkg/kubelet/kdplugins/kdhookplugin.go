@@ -24,6 +24,13 @@ func (p *KDHookPlugin) OnPodRun(pod *api.Pod) {
 	if VolumeAnnotation, ok := pod.Annotations["kuberdock-volume-annotations"]; ok {
 		ProcessLocalStorages(VolumeAnnotation)
 	}
+	if publicIP, ok := pod.Labels["kuberdock-public-ip"]; ok {
+		HandlePublicIP(publicIP)
+	}
+}
+
+func HandlePublicIP(publicIP string) {
+	glog.V(4).Infof(">>>>>>>>>>> have publicIP: %q", publicIP)
 }
 
 // Process all needed operations with localstorages,
