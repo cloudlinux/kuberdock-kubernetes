@@ -1,10 +1,13 @@
 package kdplugins
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"strconv"
+	"strings"
 
 	"github.com/golang/glog"
 	"k8s.io/kubernetes/pkg/api"
@@ -23,6 +26,49 @@ func (p *KDHookPlugin) OnPodRun(pod *api.Pod) {
 	glog.V(4).Infof(">>>>>>>>>>> Pod %q run!", pod.Name)
 	if volumeAnnotation, ok := pod.Annotations["kuberdock-volume-annotations"]; ok {
 		ProcessLocalStorages(volumeAnnotation)
+	}
+	if publicIP, ok := pod.Labels["kuberdock-public-ip"]; ok {
+		HandlePublicIP("add", publicIP)
+	}
+}
+
+// Get network interface, where we need to add publicIP.
+// Return network interface name as string and error as nil
+// or empty string with error if can't get one.
+func getIFace() (string, error) {
+	// TODO: find the better way to get flannel network interface
+	cmd := exec.Command("bash", "-c", "source /etc/sysconfig/flanneld && echo $FLANNEL_OPTIONS")
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Run()
+	if l := strings.Split(out.String(), "="); len(l) == 2 {
+		iface := l[1]
+		return strings.TrimSpace(iface), nil
+	}
+	return "", errors.New("Error while get iface from " + out.String())
+}
+
+// Add or delete publicIP on network interface depending on action.
+// Action can be add or del strings.
+func HandlePublicIP(action string, publicIP string) {
+	iface, err := getIFace()
+	if err != nil {
+		glog.V(4).Info(err)
+		return
+	}
+	cmd := exec.Command("ip", "addr", action, publicIP+"/32", "dev", iface)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	err = cmd.Run()
+	if err != nil {
+		glog.V(4).Infof("Error while try to %s publicIP(%s): %q, %s", action, publicIP, err, stderr.String())
+		return
+	}
+	if action == "add" {
+		err := exec.Command("arping", "-I", iface, "-A", publicIP, "-c", "10", "-w", "1").Run()
+		if err != nil {
+			glog.V(4).Infof("Error while try to arping: %q", err)
+		}
 	}
 }
 
@@ -89,5 +135,9 @@ func applyFSLimits(path string, size int) error {
 func (p *KDHookPlugin) OnPodKilled(pod *api.Pod) {
 	if pod != nil {
 		glog.V(4).Infof(">>>>>>>>>>> Pod %q killed", pod.Name)
+		glog.V(4).Infof(">>>>>>>>>>> Pod Labels %q killed", pod.Labels)
+		if publicIP, ok := pod.Labels["kuberdock-public-ip"]; ok {
+			HandlePublicIP("del", publicIP)
+		}
 	}
 }
