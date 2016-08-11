@@ -1,10 +1,13 @@
 package kdplugins
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"strconv"
+	"strings"
 
 	"github.com/golang/glog"
 	"k8s.io/kubernetes/pkg/api"
@@ -23,6 +26,42 @@ func (p *KDHookPlugin) OnPodRun(pod *api.Pod) {
 	glog.V(4).Infof(">>>>>>>>>>> Pod %q run!", pod.Name)
 	if VolumeAnnotation, ok := pod.Annotations["kuberdock-volume-annotations"]; ok {
 		ProcessLocalStorages(VolumeAnnotation)
+	}
+	if publicIP, ok := pod.Labels["kuberdock-public-ip"]; ok {
+		HandlePublicIP("add", publicIP)
+	}
+}
+
+func getIFace() (string, error) {
+	cmd := exec.Command("bash", "-c", "source /etc/sysconfig/flanneld && echo $FLANNEL_OPTIONS")
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Run()
+	if l := strings.Split(out.String(), "="); len(l) == 2 {
+		iface := l[1]
+		return iface, nil
+	}
+	return "", errors.New("Error while get iface from " + out.String())
+}
+func HandlePublicIP(action string, publicIP string) {
+	iface, err := getIFace()
+	if err != nil {
+		glog.V(4).Info(err)
+		return
+	}
+	// cmd := exec.Command("ip", "addr", "add", publicIP+"/32", "dev", iface)
+	glog.V(4).Infof("%s %s %s %s %s %s", "ip", "addr", action, publicIP+"/32", "dev", iface)
+	// err = cmd.Run()
+	// if err != nil {
+	// glog.V(4).Infof("Error while try to add publicIP(%s): %q", publicIP, err)
+	// return
+	// }
+	if action == "add" {
+		cmd := exec.Command("arping", "-I", iface, "-A", publicIP, "-c", "10", "-w", "1")
+		err = cmd.Run()
+		if err != nil {
+			glog.V(4).Infof("Error while try to arping: %q", err)
+		}
 	}
 }
 
@@ -92,5 +131,8 @@ func ApplyFSLimits(path string, size int) error {
 func (p *KDHookPlugin) OnPodKilled(pod *api.Pod) {
 	if pod != nil {
 		glog.V(4).Infof(">>>>>>>>>>> Pod %q killed", pod.Name)
+		if publicIP, ok := pod.Labels["kuberdock-public-ip"]; ok {
+			HandlePublicIP("del", publicIP)
+		}
 	}
 }
