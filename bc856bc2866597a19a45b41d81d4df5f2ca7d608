@@ -1,0 +1,7 @@
+Verified+1: alternatives internal <alternatives@cloudlinux.com>
+Code-Review+2: Maksym Lobur <mlobur@cloudlinux.com>
+Submitted-by: Maksym Lobur <mlobur@cloudlinux.com>
+Submitted-at: Wed, 17 Aug 2016 15:52:44 +0300
+Reviewed-on: https://gerrit.cloudlinux.com/11496
+Project: kubernetes-kuberdock
+Branch: refs/heads/kubelet-plugin
