@@ -28,7 +28,6 @@ import (
 	"k8s.io/kubernetes/pkg/api/errors"
 	"k8s.io/kubernetes/pkg/api/unversioned"
 	kubecontainer "k8s.io/kubernetes/pkg/kubelet/container"
-	"k8s.io/kubernetes/pkg/kubelet/kdplugins"
 	kubepod "k8s.io/kubernetes/pkg/kubelet/pod"
 	kubetypes "k8s.io/kubernetes/pkg/kubelet/types"
 	"k8s.io/kubernetes/pkg/kubelet/util/format"
@@ -56,9 +55,8 @@ type podStatusSyncRequest struct {
 // Updates pod statuses in apiserver. Writes only when new status has changed.
 // All methods are thread-safe.
 type manager struct {
-	kdHookPlugin *kdplugins.KDHookPlugin
-	kubeClient   clientset.Interface
-	podManager   kubepod.Manager
+	kubeClient clientset.Interface
+	podManager kubepod.Manager
 	// Map from pod UID to sync status of the corresponding pod.
 	podStatuses      map[types.UID]versionedPodStatus
 	podStatusesLock  sync.RWMutex
@@ -96,9 +94,8 @@ type Manager interface {
 
 const syncPeriod = 10 * time.Second
 
-func NewManager(kdHookPlugin *kdplugins.KDHookPlugin, kubeClient clientset.Interface, podManager kubepod.Manager) Manager {
+func NewManager(kubeClient clientset.Interface, podManager kubepod.Manager) Manager {
 	return &manager{
-		kdHookPlugin:      kdHookPlugin,
 		kubeClient:        kubeClient,
 		podManager:        podManager,
 		podStatuses:       make(map[types.UID]versionedPodStatus),
@@ -382,16 +379,11 @@ func (m *manager) syncPod(uid types.UID, status versionedPodStatus) {
 			m.deletePodStatus(uid)
 			return
 		}
-		oldPhase := pod.Status.Phase
-		newPhase := status.status.Phase
 		pod.Status = status.status
 		// TODO: handle conflict as a retry, make that easier too.
 		pod, err = m.kubeClient.Core().Pods(pod.Namespace).UpdateStatus(pod)
 		if err == nil {
 			glog.V(3).Infof("Status for pod %q updated successfully: %+v", format.Pod(pod), status)
-			if newPhase != oldPhase && newPhase == api.PodRunning {
-				m.kdHookPlugin.OnPodRun(pod)
-			}
 			m.apiStatusVersions[pod.UID] = status.version
 			if kubepod.IsMirrorPod(pod) {
 				// We don't handle graceful deletion of mirror pods.

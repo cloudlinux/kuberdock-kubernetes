@@ -637,14 +637,19 @@ func (dm *DockerManager) runContainer(
 		return kubecontainer.ContainerID{}, err
 	}
 	dm.recorder.Eventf(ref, api.EventTypeNormal, kubecontainer.CreatedContainer, "Created container with docker id %v", utilstrings.ShortenString(dockerContainer.ID, 12))
-	dm.kdHookPlugin.OnContainerCreatedInPod(container, pod)
 
+	if container.Name != PodInfraContainerName {
+		dm.kdHookPlugin.OnContainerCreatedInPod(container, pod)
+	}
 	if err = dm.client.StartContainer(dockerContainer.ID, nil); err != nil {
 		dm.recorder.Eventf(ref, api.EventTypeWarning, kubecontainer.FailedToStartContainer,
 			"Failed to start container with docker id %v with error: %v", utilstrings.ShortenString(dockerContainer.ID, 12), err)
 		return kubecontainer.ContainerID{}, err
 	}
 	dm.recorder.Eventf(ref, api.EventTypeNormal, kubecontainer.StartedContainer, "Started container with docker id %v", utilstrings.ShortenString(dockerContainer.ID, 12))
+	if container.Name == PodInfraContainerName {
+		dm.kdHookPlugin.OnPodRun(pod)
+	}
 
 	return kubecontainer.DockerID(dockerContainer.ID).ContainerID(), nil
 }
