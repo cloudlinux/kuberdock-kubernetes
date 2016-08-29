@@ -3,20 +3,187 @@ package kdplugins
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 
+	docker "github.com/fsouza/go-dockerclient"
 	"github.com/golang/glog"
 	"k8s.io/kubernetes/pkg/api"
 )
 
 type KDHookPlugin struct {
+	dockerClient *docker.Client
 }
 
-func (p *KDHookPlugin) OnContainerCreatedInPod(container *api.Container, pod *api.Pod) {
-	glog.V(4).Infof(">>>>>>>>>>> Container %q created in pod! %q", container.Name, pod.Name)
+func NewKDHookPlugin(dockerClient *docker.Client) *KDHookPlugin {
+	return &KDHookPlugin{dockerClient: dockerClient}
+}
+
+func (p *KDHookPlugin) OnContainerCreatedInPod(conteinerId string, container *api.Container, pod *api.Pod) {
+	glog.V(3).Infof(">>>>>>>>>>> Container %q(%q) created in pod! %q", container.Name, conteinerId, pod.Name)
+	dockerContainer, err := p.dockerClient.InspectContainer(conteinerId)
+	if err != nil {
+		glog.Errorf(">>>>>>>>>>> Can't inspect container %q: %+v", err)
+		return
+	}
+	var volumes []api.Volume
+	for _, volume := range pod.Spec.Volumes {
+		if isDirEmpty(getVolumePath(volume)) {
+			volumes = append(volumes, volume)
+		}
+	}
+	if len(volumes) == 0 {
+		glog.V(3).Infoln(">>>>>>>>>>> No empty volumes found")
+		return
+	}
+
+	if err := p.prefillVolumes(container, volumes, dockerContainer.GraphDriver.Data["LowerDir"]); err != nil {
+		glog.Errorf(">>>>>>>>>>> Can't prefill volumes: %+v", err)
+	}
+}
+
+func (p *KDHookPlugin) prefillVolumes(container *api.Container, volumes []api.Volume, lowerDir string) error {
+	type volumePair struct {
+		volumePath      string
+		volumeMountPath string
+	}
+
+	glog.V(3).Infoln(">>>>>>>>>>> Prefilling volumes")
+	var mounts []volumePair
+	for _, vm := range container.VolumeMounts {
+		for _, v := range volumes {
+			if vm.Name == v.Name {
+				mounts = append(mounts, volumePair{volumePath: getVolumePath(v), volumeMountPath: vm.MountPath})
+			}
+		}
+	}
+	if len(mounts) == 0 {
+		glog.V(3).Infoln(">>>>>>>>>>> No pairs found")
+		return nil
+	}
+
+	glog.V(3).Infof(">>>>>>>>>>> LowerDir: %q", lowerDir)
+	for _, pair := range mounts {
+		dstDir := pair.volumePath
+		srcDir := filepath.Join(lowerDir, pair.volumeMountPath)
+		if !isDirEmpty(srcDir) {
+			glog.V(3).Infof(">>>>>>>>>>> prefillVolumes: copying from %s to %s", srcDir, dstDir)
+			if err := copyR(dstDir, srcDir, lowerDir); err != nil {
+				return fmt.Errorf("can't copy from %s to %s: %+v", srcDir, dstDir, err)
+			}
+		}
+	}
+	return nil
+}
+
+func copyR(dstDir, srcDir, baseSrc string) error {
+	return filepath.Walk(srcDir, func(p string, info os.FileInfo, err error) error {
+		relPath, err := filepath.Rel(srcDir, p)
+		if err != nil {
+			return err
+		}
+		dst := filepath.Join(dstDir, relPath)
+		if dst == dstDir {
+			return nil
+		}
+		if err := os.MkdirAll(filepath.Dir(dst), os.ModePerm); err != nil {
+			return err
+		}
+		if info.IsDir() {
+			return os.Mkdir(dst, os.ModePerm)
+		}
+		if info.Mode()&os.ModeSymlink == os.ModeSymlink {
+			if err := copySymlink(p, dstDir, baseSrc); err != nil {
+				return fmt.Errorf("can't copy symlink %q: %+v", err)
+			}
+			return nil
+		}
+
+		dstFile, err := os.Create(dst)
+		if err != nil {
+			return err
+		}
+		defer dstFile.Close()
+
+		srcFile, err := os.Open(p)
+		if err != nil {
+			return err
+		}
+		defer srcFile.Close()
+
+		_, err = io.Copy(dstFile, srcFile)
+		return err
+	})
+}
+
+func copySymlink(symlink, dstDir, baseSrc string) error {
+	p, err := os.Readlink(symlink)
+	if err != nil {
+		return err
+	}
+	p = filepath.Join(baseSrc, p)
+	info, err := os.Stat(p)
+	if err != nil {
+		return err
+	}
+	relPath, err := filepath.Rel(baseSrc, p)
+	if err != nil {
+		return err
+	}
+	dst := filepath.Join(dstDir, relPath)
+	if err := os.MkdirAll(filepath.Dir(dst), os.ModePerm); err != nil {
+		return err
+	}
+	if info.IsDir() {
+		if err := copyR(dst, p, baseSrc); err != nil {
+			return err
+		}
+		return os.Symlink(dst, filepath.Join(dstDir, filepath.Base(symlink)))
+	}
+
+	dstFile, err := os.Create(dst)
+	if err != nil {
+		return err
+	}
+	defer dstFile.Close()
+
+	srcFile, err := os.Open(p)
+	if err != nil {
+		return err
+	}
+	defer srcFile.Close()
+
+	if _, err := io.Copy(dstFile, srcFile); err != nil {
+		return err
+	}
+	return os.Symlink(dst, filepath.Join(dstDir, filepath.Base(symlink)))
+}
+
+func getVolumePath(volume api.Volume) string {
+	if volume.HostPath != nil {
+		return volume.HostPath.Path
+	}
+	return ""
+}
+
+func isDirEmpty(path string) bool {
+	f, err := os.Open(path)
+	if err != nil {
+		glog.V(3).Infof(">>>>>>>>>>> Dir %q doesn't exist", path)
+		return true
+	}
+	defer f.Close()
+
+	if _, err := f.Readdirnames(1); err == io.EOF {
+		glog.V(3).Infof(">>>>>>>>>>> Dir %q is empty", path)
+		return true
+	}
+	glog.V(3).Infof(">>>>>>>>>>> Dir %q is not empty", path)
+	return false
 }
 
 const fsLimitPath string = "/var/lib/kuberdock/scripts/fslimit.py"
@@ -65,7 +232,7 @@ func getPublicIP(pod *api.Pod) string {
 }
 
 func (p *KDHookPlugin) OnPodRun(pod *api.Pod) {
-	glog.V(4).Infof(">>>>>>>>>>> Pod %q run!", pod.Name)
+	glog.V(3).Infof(">>>>>>>>>>> Pod %q run!", pod.Name)
 	if specs := getVolumeSpecs(pod); specs != nil {
 		processLocalStorages(specs)
 	}
@@ -156,7 +323,7 @@ func applyFSLimits(spec volumeSpec) error {
 
 func (p *KDHookPlugin) OnPodKilled(pod *api.Pod) {
 	if pod != nil {
-		glog.V(4).Infof(">>>>>>>>>>> Pod %q killed", pod.Name)
+		glog.V(3).Infof(">>>>>>>>>>> Pod %q killed", pod.Name)
 		if publicIP := getPublicIP(pod); publicIP != "" {
 			handlePublicIP("add", publicIP)
 		}
