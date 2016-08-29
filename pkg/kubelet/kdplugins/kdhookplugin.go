@@ -3,11 +3,14 @@ package kdplugins
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 
+	docker "github.com/fsouza/go-dockerclient"
 	"github.com/golang/glog"
 	"k8s.io/kubernetes/pkg/api"
 )
@@ -15,8 +18,95 @@ import (
 type KDHookPlugin struct {
 }
 
-func (p *KDHookPlugin) OnContainerCreatedInPod(container *api.Container, pod *api.Pod) {
+func (p *KDHookPlugin) OnContainerCreatedInPod(dockerContainer *docker.Container, container *api.Container, pod *api.Pod) {
+	volumes := pod.Spec.Volumes
+	for _, volume := range volumes {
+		if !isDirEmpty(getVolumePath(volume)) {
+			return
+		}
+	}
+	if err := p.prefillVolumes(container, volumes, dockerContainer.GraphDriver.Data["LowerDir"]); err != nil {
+		glog.Errorf("Can't prefill volumes: %+v", err)
+	}
 	glog.V(4).Infof(">>>>>>>>>>> Container %q created in pod! %q", container.Name, pod.Name)
+}
+
+func (p *KDHookPlugin) prefillVolumes(container *api.Container, volumes []api.Volume, lowerDir string) error {
+	type volumePair struct {
+		volumePath      string
+		volumeMountPath string
+	}
+
+	var mounts []volumePair
+	for _, vm := range container.VolumeMounts {
+		for _, v := range volumes {
+			if vm.Name == v.Name {
+				mounts = append(mounts, volumePair{volumePath: getVolumePath(v), volumeMountPath: mv.MountPath})
+			}
+		}
+	}
+	if len(mounts) == 0 {
+		return nil
+	}
+
+	for _, pair := range mounts {
+		dstDir := pair.volumePath
+		srcDir := filepath.Join(lowerDir, pair.volumeMountPath)
+		if !isDirEmpty(srcDir) {
+			glog.V(3).Infof("prefillVolumes: copying from %s to %s", srcDir, dstDir)
+			if err := copyR(dstDir, srcDir); err != nil {
+				return fmt.Errorf("can't copy from %s to %s: %+v", srcDir, dstDir, err)
+			}
+		}
+	}
+	return nil
+}
+
+func copyR(dstDir, srcDir string) error {
+	return filepath.Walk(srcDir, func(path string, info os.FileInfo, err error) error {
+		dst := filepath.Join(dstDir, strings.TrimPrefix(path, srcDir))
+		if dst == dstDir {
+			return
+		}
+		if info.IsDir() {
+			return os.Mkdir(dst, os.ModePerm)
+		}
+
+		dstFile, err := os.Create(dst)
+		if err != nil {
+			return err
+		}
+		defer dstFile.Close()
+
+		srcFile, err := os.Open(path)
+		if err != nil {
+			return err
+		}
+		defer srcFile.Close()
+
+		_, err = io.Copy(dstFile, srcFile)
+		return err
+	})
+}
+
+func getVolumePath(volume api.Volume) string {
+	if volume.HostPath != nil {
+		return volume.HostPath.Path
+	}
+	return ""
+}
+
+func isDirEmpty(path string) bool {
+	f, err := os.Open(path)
+	if err != nil {
+		return true
+	}
+	defer f.Close()
+
+	if _, err := f.Readdirnames(1); err == io.EOF {
+		return true
+	}
+	return false
 }
 
 const fsLimitPath string = "/var/lib/kuberdock/scripts/fslimit.py"
