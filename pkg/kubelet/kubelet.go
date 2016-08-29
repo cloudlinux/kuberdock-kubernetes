@@ -31,6 +31,7 @@ import (
 	"sync"
 	"time"
 
+	docker "github.com/fsouza/go-dockerclient"
 	"github.com/golang/glog"
 	cadvisorapi "github.com/google/cadvisor/info/v1"
 	cadvisorapiv2 "github.com/google/cadvisor/info/v2"
@@ -225,6 +226,7 @@ func NewMainKubelet(
 	if resyncInterval <= 0 {
 		return nil, fmt.Errorf("invalid sync frequency %d", resyncInterval)
 	}
+	origDockerClient := dockerClient.(*docker.Client)
 	dockerClient = dockertools.NewInstrumentedDockerInterface(dockerClient)
 
 	serviceStore := cache.NewStore(cache.MetaNamespaceKeyFunc)
@@ -291,7 +293,7 @@ func NewMainKubelet(
 	}
 
 	klet := &Kubelet{
-		kdHookPlugin:                   &kdplugins.KDHookPlugin{},
+		kdHookPlugin:                   kdplugins.NewKDHookPlugin(origDockerClient),
 		resourceMultipliers:            resourceMultipliers,
 		hostname:                       hostname,
 		nodeName:                       nodeName,
