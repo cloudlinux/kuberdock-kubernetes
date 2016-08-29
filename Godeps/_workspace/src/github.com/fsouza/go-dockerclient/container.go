@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/ioutil"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -271,6 +272,12 @@ type SwarmNode struct {
 	Labels map[string]string `json:"Labels,omitempty" yaml:"Labels,omitempty"`
 }
 
+// GraphDriver contains information about the GraphDriver used by the container
+type GraphDriver struct {
+	Name string            `json:"Name,omitempty" yaml:"Name,omitempty"`
+	Data map[string]string `json:"Data,omitempty" yaml:"Data,omitempty"`
+}
+
 // Container is the type encompasing everything about a container - its config,
 // hostconfig, etc.
 type Container struct {
@@ -298,10 +305,11 @@ type Container struct {
 	Driver         string  `json:"Driver,omitempty" yaml:"Driver,omitempty"`
 	Mounts         []Mount `json:"Mounts,omitempty" yaml:"Mounts,omitempty"`
 
-	Volumes    map[string]string `json:"Volumes,omitempty" yaml:"Volumes,omitempty"`
-	VolumesRW  map[string]bool   `json:"VolumesRW,omitempty" yaml:"VolumesRW,omitempty"`
-	HostConfig *HostConfig       `json:"HostConfig,omitempty" yaml:"HostConfig,omitempty"`
-	ExecIDs    []string          `json:"ExecIDs,omitempty" yaml:"ExecIDs,omitempty"`
+	Volumes     map[string]string `json:"Volumes,omitempty" yaml:"Volumes,omitempty"`
+	VolumesRW   map[string]bool   `json:"VolumesRW,omitempty" yaml:"VolumesRW,omitempty"`
+	HostConfig  *HostConfig       `json:"HostConfig,omitempty" yaml:"HostConfig,omitempty"`
+	ExecIDs     []string          `json:"ExecIDs,omitempty" yaml:"ExecIDs,omitempty"`
+	GraphDriver *GraphDriver      `json:"GraphDriver,omitempty" yaml:"GraphDriver,omitempty"`
 
 	RestartCount int `json:"RestartCount,omitempty" yaml:"RestartCount,omitempty"`
 
@@ -414,9 +422,12 @@ func (c *Client) CreateContainer(opts CreateContainerOptions) (*Container, error
 	}
 	defer resp.Body.Close()
 	var container Container
+	body, _ := ioutil.ReadAll(resp.Body)
+	fmt.Printf(">>>>>>>>>>> BODY: %s\n", body)
 	if err := json.NewDecoder(resp.Body).Decode(&container); err != nil {
 		return nil, err
 	}
+	fmt.Printf(">>>>>>>>>>> CONTAINER: %#v\n", container)
 
 	container.Name = opts.Name
 
