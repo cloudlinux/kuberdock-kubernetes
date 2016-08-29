@@ -639,7 +639,7 @@ func (dm *DockerManager) runContainer(
 	dm.recorder.Eventf(ref, api.EventTypeNormal, kubecontainer.CreatedContainer, "Created container with docker id %v", utilstrings.ShortenString(dockerContainer.ID, 12))
 
 	if container.Name != PodInfraContainerName {
-		dm.kdHookPlugin.OnContainerCreatedInPod(container, pod)
+		dm.kdHookPlugin.OnContainerCreatedInPod(dockerContainer, container, pod)
 	}
 	if err = dm.client.StartContainer(dockerContainer.ID, nil); err != nil {
 		dm.recorder.Eventf(ref, api.EventTypeWarning, kubecontainer.FailedToStartContainer,
