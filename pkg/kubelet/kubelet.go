@@ -31,6 +31,7 @@ import (
 	"sync"
 	"time"
 
+	docker "github.com/fsouza/go-dockerclient"
 	"github.com/golang/glog"
 	cadvisorapi "github.com/google/cadvisor/info/v1"
 	cadvisorapiv2 "github.com/google/cadvisor/info/v2"
@@ -290,8 +291,9 @@ func NewMainKubelet(
 		flannelExperimentalOverlay = false
 	}
 
+	dockerStruct := dockerClient.(*docker.Client)
 	klet := &Kubelet{
-		kdHookPlugin:                   &kdplugins.KDHookPlugin{},
+		kdHookPlugin:                   kdplugins.NewKDHookPlugin{dockerClient: dockerStruct},
 		resourceMultipliers:            resourceMultipliers,
 		hostname:                       hostname,
 		nodeName:                       nodeName,
