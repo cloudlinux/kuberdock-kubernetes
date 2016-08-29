@@ -1,26 +1,294 @@
 package kdplugins
 
 import (
+	"bufio"
 	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/ioutil"
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 
+	docker "github.com/fsouza/go-dockerclient"
 	"github.com/golang/glog"
 	"k8s.io/kubernetes/pkg/api"
 )
 
-type KDHookPlugin struct {
+var mountReg *regexp.Regexp
+
+func init() {
+	mountReg = regexp.MustCompile(`\/[\/\w]+kubernetes.io[\/\w\-]+`)
 }
 
-func (p *KDHookPlugin) OnContainerCreatedInPod(container *api.Container, pod *api.Pod) {
-	glog.V(4).Infof(">>>>>>>>>>> Container %q created in pod! %q", container.Name, pod.Name)
+type KDHookPlugin struct {
+	dockerClient *docker.Client
+}
+
+func NewKDHookPlugin(dockerClient *docker.Client) *KDHookPlugin {
+	return &KDHookPlugin{dockerClient: dockerClient}
+}
+
+func (p *KDHookPlugin) OnContainerCreatedInPod(conteinerId string, container *api.Container, pod *api.Pod) {
+	glog.V(3).Infof(">>>>>>>>>>> Container %q(%q) created in pod! %q", container.Name, conteinerId, pod.Name)
+	dockerContainer, err := p.dockerClient.InspectContainer(conteinerId)
+	if err != nil {
+		glog.Errorf("Can't inspect container %q(%q): %+v", container.Name, conteinerId, err)
+		return
+	}
+	var volumes []api.Volume
+	for _, volume := range pod.Spec.Volumes {
+		path, err := getVolumePath(volume)
+		if err != nil {
+			glog.Warningf("Can't get volume path: %+v", err)
+			continue
+		}
+		if isDirEmpty(path) {
+			volumes = append(volumes, volume)
+		}
+	}
+	if len(volumes) == 0 {
+		glog.V(3).Infoln("No empty volumes found")
+		return
+	}
+
+	if err := p.prefillVolumes(container, volumes, dockerContainer.GraphDriver.Data["LowerDir"]); err != nil {
+		glog.Errorf("Can't prefill volumes for container %q(%q): %+v", container.Name, conteinerId, err)
+	}
+}
+
+func (p *KDHookPlugin) prefillVolumes(container *api.Container, volumes []api.Volume, lowerDir string) error {
+	type volumePair struct {
+		volumePath      string
+		volumeMountPath string
+	}
+
+	glog.V(3).Infoln("Prefilling volumes...")
+	var mounts []volumePair
+	for _, vm := range container.VolumeMounts {
+		for _, v := range volumes {
+			if vm.Name == v.Name {
+				path, err := getVolumePath(v)
+				if err != nil {
+					glog.Warningf("Can't get volume path: %+v", err)
+					continue
+				}
+				mounts = append(mounts, volumePair{volumePath: path, volumeMountPath: vm.MountPath})
+			}
+		}
+	}
+	if len(mounts) == 0 {
+		glog.V(4).Infoln("Prefilling volumes: no pairs found")
+		return nil
+	}
+	var s string
+	for _, m := range mounts {
+		s += fmt.Sprintf("volumePath: %q, mountPath: %q\n", m.volumePath, m.volumeMountPath)
+	}
+	glog.V(4).Infof(">>>>>>>>>>> Found volumes: %s", s)
+
+	for _, pair := range mounts {
+		dstDir := pair.volumePath
+		srcDir := filepath.Join(lowerDir, pair.volumeMountPath)
+		if !isDirEmpty(srcDir) {
+			glog.V(4).Infof("Prefill volumes: copying from %s to %s", srcDir, dstDir)
+			if err := copyR(dstDir, srcDir, lowerDir); err != nil {
+				return fmt.Errorf("can't copy from %s to %s: %+v", srcDir, dstDir, err)
+			}
+		}
+	}
+	return nil
+}
+
+func copyR(dstDir, srcDir, baseSrc string) error {
+	return filepath.Walk(srcDir, func(p string, info os.FileInfo, err error) error {
+		relPath, err := filepath.Rel(srcDir, p)
+		if err != nil {
+			return err
+		}
+		dst := filepath.Join(dstDir, relPath)
+		if dst == dstDir {
+			return nil
+		}
+		if err := os.MkdirAll(filepath.Dir(dst), os.ModePerm); err != nil {
+			return err
+		}
+		if info.IsDir() {
+			return os.Mkdir(dst, os.ModePerm)
+		}
+		if info.Mode()&os.ModeSymlink == os.ModeSymlink {
+			if err := copySymlink(p, srcDir, dstDir, baseSrc); err != nil {
+				return fmt.Errorf("can't copy symlink %q: %+v", p, err)
+			}
+			return nil
+		}
+
+		dstFile, err := os.Create(dst)
+		if err != nil {
+			return err
+		}
+		defer dstFile.Close()
+		srcFile, err := os.Open(p)
+		if err != nil {
+			return err
+		}
+		defer srcFile.Close()
+		_, err = io.Copy(dstFile, srcFile)
+		return err
+	})
+}
+
+func copySymlink(symlink, srcDir, dstDir, baseSrc string) error {
+	p, err := os.Readlink(symlink)
+	if err != nil {
+		return err
+	}
+	relDir, err := filepath.Rel(srcDir, filepath.Dir(symlink))
+	if err != nil {
+		return err
+	}
+	if !filepath.IsAbs(p) {
+		oldname := filepath.Join(dstDir, relDir, filepath.Base(p))
+		newname := filepath.Join(dstDir, relDir, filepath.Base(symlink))
+		return os.Symlink(oldname, newname)
+	}
+
+	p = filepath.Join(baseSrc, p)
+	info, err := os.Stat(p)
+	if err != nil {
+		return err
+	}
+	relPath, err := filepath.Rel(baseSrc, p)
+	if err != nil {
+		return err
+	}
+	dst := filepath.Join(dstDir, relPath)
+	if err := os.MkdirAll(filepath.Dir(dst), os.ModePerm); err != nil {
+		return err
+	}
+	if info.IsDir() {
+		if err := copyR(dst, p, baseSrc); err != nil {
+			return err
+		}
+		return os.Symlink(dst, filepath.Join(dstDir, relDir, filepath.Base(symlink)))
+	}
+
+	dstFile, err := os.Create(dst)
+	if err != nil {
+		return err
+	}
+	defer dstFile.Close()
+	srcFile, err := os.Open(p)
+	if err != nil {
+		return err
+	}
+	defer srcFile.Close()
+	if _, err := io.Copy(dstFile, srcFile); err != nil {
+		return err
+	}
+	return os.Symlink(dst, filepath.Join(dstDir, relDir, filepath.Base(symlink)))
+}
+
+func getVolumePath(volume api.Volume) (string, error) {
+	if volume.HostPath != nil {
+		return volume.HostPath.Path, nil
+	}
+	if volume.RBD != nil {
+		return getCephPath(volume)
+	}
+	return "", fmt.Errorf("volume path not found")
+}
+
+func getCephPath(volume api.Volume) (string, error) {
+	type rbdMap struct {
+		Pool   string `json:"pool"`
+		Name   string `json:"name"`
+		Device string `json:"device"`
+		Snap   string `json:"snap"`
+	}
+	type rbdMaps map[string]rbdMap
+
+	pool := volume.RBD.RBDPool
+	image := volume.RBD.RBDImage
+	glog.V(3).Infof(">>>>>>>>>>> Pool: %q, image: %q", pool, image)
+	resp, err := exec.Command("bash", "-c", "rbd --format json showmapped").CombinedOutput()
+	if err != nil {
+		return "", err
+	}
+	var rbdResp rbdMaps
+	if err := json.Unmarshal(resp, &rbdResp); err != nil {
+		return "", err
+	}
+	var device string
+	for _, v := range rbdResp {
+		if v.Pool == pool && v.Name == image {
+			device = v.Device
+			break
+		}
+	}
+	if device == "" {
+		return "", fmt.Errorf("rbd pool %q image %q: device not found", pool, image)
+	}
+	glog.V(3).Infof(">>>>>>>>>>> Device: %q", device)
+	mounts, err := parseMounts(device)
+	if err != nil {
+		return "", err
+	}
+	var mount string
+	for _, m := range mounts {
+		if strings.Contains(m, fmt.Sprintf("%s-image-%s", pool, image)) {
+			mount = m
+			break
+		}
+	}
+	if mount == "" {
+		return "", fmt.Errorf("rbd pool %q image %q: mount point not found", pool, image)
+	}
+	glog.V(4).Infof(">>>>>>>>>>> Ceph: mount: %q, path: %q", mount, mountReg)
+	path := mountReg.FindString(mount)
+	if path == "" {
+		return "", fmt.Errorf("internal error: mount path is empty")
+	}
+	return path, nil
+}
+
+func parseMounts(device string) ([]string, error) {
+	procFile, err := os.Open("/proc/mounts")
+	if err != nil {
+		return nil, err
+	}
+	defer procFile.Close()
+
+	var mounts []string
+	scanner := bufio.NewScanner(procFile)
+	for scanner.Scan() {
+		if strings.HasPrefix(scanner.Text(), device) {
+			mounts = append(mounts, scanner.Text())
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, err
+	}
+	return mounts, nil
+}
+
+func isDirEmpty(path string) bool {
+	f, err := os.Open(path)
+	if err != nil {
+		return true
+	}
+	defer f.Close()
+
+	if _, err := f.Readdirnames(1); err == io.EOF {
+		return true
+	}
+	return false
 }
 
 const fsLimitPath string = "/var/lib/kuberdock/scripts/fslimit.py"
@@ -128,7 +396,7 @@ func getPublicIP(pod *api.Pod) (string, error) {
 }
 
 func (p *KDHookPlugin) OnPodRun(pod *api.Pod) {
-	glog.V(4).Infof(">>>>>>>>>>> Pod %q run!", pod.Name)
+	glog.V(3).Infof(">>>>>>>>>>> Pod %q run!", pod.Name)
 	if specs := getVolumeSpecs(pod); specs != nil {
 		processLocalStorages(specs)
 	}
@@ -219,7 +487,7 @@ func applyFSLimits(spec volumeSpec) error {
 
 func (p *KDHookPlugin) OnPodKilled(pod *api.Pod) {
 	if pod != nil {
-		glog.V(4).Infof(">>>>>>>>>>> Pod %q killed", pod.Name)
+		glog.V(3).Infof(">>>>>>>>>>> Pod %q killed", pod.Name)
 		if publicIP, err := getPublicIP(pod); err == nil {
 			handlePublicIP("del", publicIP)
 		}
