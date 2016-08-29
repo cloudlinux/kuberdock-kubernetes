@@ -291,7 +291,7 @@ func NewMainKubelet(
 	}
 
 	klet := &Kubelet{
-		kdHookPlugin:                   &kdplugins.KDHookPlugin{},
+		kdHookPlugin:                   &kdplugins.KDHookPlugin{DockerClient: dockerClient},
 		resourceMultipliers:            resourceMultipliers,
 		hostname:                       hostname,
 		nodeName:                       nodeName,
