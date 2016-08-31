@@ -1,8 +1,11 @@
 package kdplugins
 
 import (
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
+	"io/ioutil"
+	"net/http"
 	"os"
 	"os/exec"
 	"strconv"
@@ -20,6 +23,7 @@ func (p *KDHookPlugin) OnContainerCreatedInPod(container *api.Container, pod *ap
 }
 
 const fsLimitPath string = "/var/lib/kuberdock/scripts/fslimit.py"
+const kdConfPath string = "/usr/libexec/kubernetes/kubelet-plugins/net/exec/kuberdock/kuberdock.json"
 
 type volumeSpec struct {
 	Path string  `json:"path"`
@@ -55,10 +59,66 @@ func getVolumeSpecs(pod *api.Pod) []volumeSpec {
 	return nil
 }
 
+type settings struct {
+	Nonfloatingpublicips string `json:"nonfloating_public_ips"`
+	Master               string `json:"master"`
+	Node                 string `json:"node"`
+	Token                string `json:"token"`
+}
+
+type kdResponse struct {
+	Status string `json:"status"`
+	Data   string `json:"data"`
+}
+
+// Call KuberDock API to get free publicIP for this node and return it
+// or empty string if there are no free publicIP for this node.
+func getNonFloatingIP(pod *api.Pod) string {
+	file, err := ioutil.ReadFile(kdConfPath)
+	if err != nil {
+		glog.V(4).Infof("File error: %v\n", err)
+		return ""
+	}
+	var s settings
+	if err := json.Unmarshal(file, &s); err != nil {
+		glog.V(4).Infof("Error while try to parse json(%s): %q", file, err)
+		return ""
+	}
+	tr := &http.Transport{
+		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+	}
+	client := &http.Client{Transport: tr}
+	url := fmt.Sprintf("https://%s/api/ippool/get-public-ip/%s/%s?token=%s", s.Master, s.Node, pod.Namespace, s.Token)
+	resp, err := client.Get(url)
+	if err != nil {
+		glog.V(4).Infof("Error while http.get: %q", err)
+		return ""
+	}
+	defer resp.Body.Close()
+	body, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		glog.V(4).Infof("Error while read response body: %q", err)
+		return ""
+	}
+	var kdResp kdResponse
+	if err := json.Unmarshal([]byte(body), &kdResp); err != nil {
+		glog.V(4).Infof("Error while try to parse json(%s): %q", body, err)
+		return ""
+	}
+	if kdResp.Status == "OK" {
+		glog.V(4).Infof("Found publicIP: %s", kdResp.Data)
+		return kdResp.Data
+	}
+	return ""
+}
+
 // Get publicIP from pod labels
 // Return publicIP as string or empty string
 func getPublicIP(pod *api.Pod) string {
 	if publicIP, ok := pod.Labels["kuberdock-public-ip"]; ok {
+		if publicIP == "true" {
+			publicIP = getNonFloatingIP(pod)
+		}
 		return publicIP
 	}
 	return ""
