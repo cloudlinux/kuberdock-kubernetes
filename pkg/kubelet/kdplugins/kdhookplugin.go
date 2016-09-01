@@ -124,6 +124,7 @@ func getPublicIP(pod *api.Pod) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	pod.Labels["kuberdock-public-ip"] = publicIP
 	return publicIP, nil
 }
 
