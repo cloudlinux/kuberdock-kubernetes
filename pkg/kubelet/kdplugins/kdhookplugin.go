@@ -1,14 +1,19 @@
 package kdplugins
 
 import (
+	"archive/tar"
+	"archive/zip"
+	"compress/gzip"
 	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/ioutil"
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -27,13 +32,21 @@ const fsLimitPath string = "/var/lib/kuberdock/scripts/fslimit.py"
 const kdConfPath string = "/usr/libexec/kubernetes/kubelet-plugins/net/exec/kuberdock/kuberdock.json"
 
 type volumeSpec struct {
+	Path      string
+	Name      string
+	Size      float64
+	BackupURL string
+}
+
+type localStorage struct {
 	Path string  `json:"path"`
 	Name string  `json:"name"`
 	Size float64 `json:"size"`
 }
 
 type volumeAnnotation struct {
-	LocalStorage *volumeSpec `json:"localStorage,omitempty"`
+	LocalStorage *localStorage `json:"localStorage,omitempty"`
+	BackupURL    string        `json:"backupUrl,omitempty"`
 }
 
 // Get localstorage volumes spec from pod annotation
@@ -51,7 +64,13 @@ func getVolumeSpecs(pod *api.Pod) []volumeSpec {
 					if volume.LocalStorage.Size == 0 {
 						volume.LocalStorage.Size = 1
 					}
-					specs = append(specs, *volume.LocalStorage)
+					spec := volumeSpec{
+						Path:      volume.LocalStorage.Path,
+						Name:      volume.LocalStorage.Name,
+						Size:      volume.LocalStorage.Size,
+						BackupURL: volume.BackupURL,
+					}
+					specs = append(specs, spec)
 				}
 			}
 			return specs
@@ -185,7 +204,185 @@ func processLocalStorages(specs []volumeSpec) {
 		if err := applyFSLimits(spec); err != nil {
 			continue
 		}
+		if err := restoreBackup(spec); err != nil {
+			continue
+		}
 	}
+}
+
+type BackupArchive struct {
+	fileName string
+}
+
+type Extractor func(BackupArchive, string) error
+type Extractors map[string]Extractor
+
+func extractTar(archive BackupArchive, dest string) error {
+	archiveFile, err := os.Open(archive.fileName)
+
+	if err != nil {
+		return err
+	}
+	defer archiveFile.Close()
+
+	gzf, err := gzip.NewReader(archiveFile)
+	reader := tar.NewReader(gzf)
+
+	for {
+
+		header, err := reader.Next()
+
+		if err == io.EOF {
+			break
+		} else if err != nil {
+			return err
+		}
+
+		path := filepath.Join(dest, header.Name)
+		mode := os.FileMode(header.Mode)
+
+		if header.Typeflag == tar.TypeDir {
+			os.MkdirAll(path, mode)
+		} else {
+			os.MkdirAll(filepath.Dir(path), mode)
+			f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, mode)
+			if err != nil {
+				return err
+			}
+			defer f.Close()
+			_, err = io.Copy(f, reader)
+			if err != nil {
+				return err
+			}
+		}
+
+	}
+
+	return nil
+}
+
+func extractZip(archive BackupArchive, dest string) error {
+	reader, err := zip.OpenReader(archive.fileName)
+
+	if err != nil {
+		return err
+	}
+
+	defer reader.Close()
+
+	extractAndWriteFile := func(f *zip.File) error {
+		rc, err := f.Open()
+		if err != nil {
+			return err
+		}
+		defer rc.Close()
+
+		path := filepath.Join(dest, f.Name)
+
+		if f.FileInfo().IsDir() {
+			os.MkdirAll(path, f.Mode())
+		} else {
+			os.MkdirAll(filepath.Dir(path), f.Mode())
+			f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, f.Mode())
+			if err != nil {
+				return err
+			}
+			defer f.Close()
+
+			_, err = io.Copy(f, rc)
+			if err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+
+	for _, f := range reader.File {
+		err := extractAndWriteFile(f)
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+var extractors = Extractors{
+	".zip": extractZip,
+	".gz":  extractTar,
+}
+
+type UnknownBackupFormatError struct {
+	url string
+}
+
+func (e UnknownBackupFormatError) Error() string {
+	formats := make([]string, 0, len(extractors))
+	for k := range extractors {
+		formats = append(formats, k)
+	}
+	return fmt.Sprintf("Unknown type of archive got from `%s`. At the moment only %s formats are supported", e.url, formats)
+}
+
+func getExtractor(backupURL string) (Extractor, error) {
+	var ext = filepath.Ext(backupURL)
+	fn := extractors[ext]
+	if fn == nil {
+		return nil, UnknownBackupFormatError{backupURL}
+	}
+	return fn, nil
+}
+
+func getBackupFile(backupURL string) (BackupArchive, error) {
+
+	transport := &http.Transport{}
+	transport.RegisterProtocol("file", http.NewFileTransport(http.Dir("/")))
+	client := &http.Client{Transport: transport}
+
+	res, err := client.Get(backupURL)
+	if err != nil {
+		return BackupArchive{}, err
+	}
+	if res.StatusCode > 200 {
+		return BackupArchive{}, fmt.Errorf("Connection failure while downloading backup from `%s`: %d (%s)", backupURL, res.StatusCode, http.StatusText(res.StatusCode))
+	}
+
+	defer res.Body.Close()
+
+	out, err := ioutil.TempFile(os.TempDir(), "kd-")
+	if err != nil {
+		return BackupArchive{}, err
+	}
+
+	_, err = io.Copy(out, res.Body)
+	if err != nil {
+		return BackupArchive{}, err
+	}
+
+	var archive = BackupArchive{fileName: out.Name()}
+	return archive, nil
+}
+
+// Restore content of local storage from backups if they exist.
+func restoreBackup(spec volumeSpec) error {
+	var source = spec.BackupURL
+	glog.Infof("Restoring `%s` from backup", spec.Name)
+	backupFile, err := getBackupFile(source)
+	if err != nil {
+		return err
+	}
+	defer os.Remove(backupFile.fileName)
+
+	extract, err := getExtractor(source)
+	if err != nil {
+		return err
+	}
+	err = extract(backupFile, spec.Path)
+	if err != nil {
+		return err
+	}
+	glog.Infof("Restoring complete")
+	return nil
 }
 
 // Create all necessary directories with needed permissions
