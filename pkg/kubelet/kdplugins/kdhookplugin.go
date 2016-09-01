@@ -124,17 +124,20 @@ func getPublicIP(pod *api.Pod) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	pod.Labels["kuberdock-public-ip"] = publicIP
 	return publicIP, nil
 }
 
 func (p *KDHookPlugin) OnPodRun(pod *api.Pod) {
 	glog.V(4).Infof(">>>>>>>>>>> Pod %q run!", pod.Name)
+	glog.V(4).Infof(">>>>>>>>>>> Pod before %+v ", pod)
 	if specs := getVolumeSpecs(pod); specs != nil {
 		processLocalStorages(specs)
 	}
 	if publicIP, err := getPublicIP(pod); err == nil {
 		handlePublicIP("add", publicIP)
 	}
+	glog.V(4).Infof(">>>>>>>>>>> Pod after %+v ", pod)
 }
 
 // Get network interface, where we need to add publicIP.
