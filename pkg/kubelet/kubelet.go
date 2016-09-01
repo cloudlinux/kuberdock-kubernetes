@@ -373,6 +373,7 @@ func NewMainKubelet(
 
 	klet.podCache = kubecontainer.NewCache()
 	klet.podManager = kubepod.NewBasicPodManager(kubepod.NewBasicMirrorClient(klet.kubeClient))
+	klet.kdHookPlugin.klet = klet
 
 	if mode, err := effectiveHairpinMode(componentconfig.HairpinMode(hairpinMode), containerRuntime, configureCBR0); err != nil {
 		// This is a non-recoverable error. Returning it up the callstack will just
