@@ -130,6 +130,7 @@ func getPublicIP(pod *api.Pod) (string, error) {
 func (p *KDHookPlugin) OnPodRun(pod *api.Pod) {
 	glog.V(4).Infof(">>>>>>>>>>> Pod %q run!", pod.Name)
 	if specs := getVolumeSpecs(pod); specs != nil {
+		glog.V(4).Infof("processLocalStorages")
 		processLocalStorages(specs)
 	}
 	if publicIP, err := getPublicIP(pod); err == nil {
@@ -179,6 +180,7 @@ func handlePublicIP(action string, publicIP string) {
 // Parse json volumeAnnotation from Pod Annotation field kuberdock-volume-annotations.
 func processLocalStorages(specs []volumeSpec) {
 	for _, spec := range specs {
+		glog.V(4).Infof("create volume %q", spec)
 		if err := createVolume(spec); err != nil {
 			continue
 		}
@@ -193,10 +195,12 @@ func processLocalStorages(specs []volumeSpec) {
 // Return error as nil if has no problem
 // or return error.
 func createVolume(spec volumeSpec) error {
-	if err := os.MkdirAll(spec.Path, 0755); err != nil {
+	glog.V(4).Infof("try MkDirst with 777")
+	if err := os.MkdirAll(spec.Path, 0777); err != nil {
 		glog.V(4).Infof("Error, while mkdir: %q", err)
 		return err
 	}
+	glog.V(4).Infof("MkDirst with 777")
 	err := exec.Command("chcon", "-Rt", "svirt_sandbox_file_t", spec.Path).Run()
 	if err != nil {
 		glog.V(4).Infof("Error, while chcon: %q", err)
