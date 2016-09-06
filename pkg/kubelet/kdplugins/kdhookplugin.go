@@ -193,10 +193,11 @@ func processLocalStorages(specs []volumeSpec) {
 // Return error as nil if has no problem
 // or return error.
 func createVolume(spec volumeSpec) error {
-	if err := os.MkdirAll(spec.Path, 0755); err != nil {
+	if err := os.MkdirAll(spec.Path, 0777); err != nil {
 		glog.V(4).Infof("Error, while mkdir: %q", err)
 		return err
 	}
+	glog.V(4).Infof("MkDirst with 777")
 	err := exec.Command("chcon", "-Rt", "svirt_sandbox_file_t", spec.Path).Run()
 	if err != nil {
 		glog.V(4).Infof("Error, while chcon: %q", err)
