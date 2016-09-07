@@ -60,7 +60,7 @@ func (p *KDHookPlugin) fillVolumes(volumes []api.Volume, volumeMounts []api.Volu
 			if vm.Name == v.Name {
 				path, err := getVolumePath(v)
 				if err != nil {
-					return fmt.Errorf("can't get volume path: %+v", err)
+					return fmt.Errorf("can't get volume path for volume '%+v'. Error: %+v", v, err)
 				}
 				if !isDirEmpty(path) {
 					continue
