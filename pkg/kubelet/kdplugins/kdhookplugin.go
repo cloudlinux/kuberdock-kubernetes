@@ -60,9 +60,9 @@ func (p *KDHookPlugin) fillVolumes(volumes []api.Volume, volumeMounts []api.Volu
 			if vm.Name == v.Name {
 				path, err := getVolumePath(v)
 				if err != nil {
-					return fmt.Errorf("can't get volume path: %+v", err)
+					return fmt.Errorf("can't get volume path for volume '%+v'. Error: %+v", v, err)
 				}
-				if !isDirEmpty(path) {
+				if path != "" && !isDirEmpty(path) {
 					continue
 				}
 				mounts = append(mounts, volumePair{volumePath: path, volumeMountPath: vm.MountPath})
@@ -88,13 +88,13 @@ func (p *KDHookPlugin) fillVolumes(volumes []api.Volume, volumeMounts []api.Volu
 }
 
 func getVolumePath(volume api.Volume) (string, error) {
-	if volume.HostPath != nil {
-		return volume.HostPath.Path, nil
-	}
 	if volume.RBD != nil {
 		return getCephPath(volume)
 	}
-	return "", fmt.Errorf("volume path not found")
+	if volume.HostPath != nil {
+		return volume.HostPath.Path, nil
+	}
+	return "", nil
 }
 
 func getCephPath(volume api.Volume) (string, error) {
