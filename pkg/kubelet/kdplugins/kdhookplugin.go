@@ -10,7 +10,6 @@ import (
 	"os"
 	"os/exec"
 	"strconv"
-	"strings"
 
 	"github.com/golang/glog"
 	"k8s.io/kubernetes/pkg/api"
@@ -24,7 +23,7 @@ func (p *KDHookPlugin) OnContainerCreatedInPod(container *api.Container, pod *ap
 }
 
 const fsLimitPath string = "/var/lib/kuberdock/scripts/fslimit.py"
-const kdConfPath string = "/usr/libexec/kubernetes/kubelet-plugins/net/exec/kuberdock/kuberdock.json"
+const kdConfPath string = "/var/lib/kuberdock/kuberdock.json"
 
 type volumeSpec struct {
 	Path string  `json:"path"`
@@ -64,6 +63,7 @@ type settings struct {
 	NonFloatingFublicIPs string `json:"nonfloating_public_ips"`
 	Master               string `json:"master"`
 	Node                 string `json:"node"`
+	NetworkInterface     string `json:"network_interface"`
 	Token                string `json:"token"`
 }
 
@@ -142,15 +142,24 @@ func (p *KDHookPlugin) OnPodRun(pod *api.Pod) {
 // or empty string with error if can't get one.
 func getIFace() (string, error) {
 	// TODO: find the better way to get flannel network interface
-	out, err := exec.Command("bash", "-c", "source /etc/sysconfig/flanneld && echo $FLANNEL_OPTIONS").CombinedOutput()
+	file, err := ioutil.ReadFile(kdConfPath)
 	if err != nil {
-		return "", fmt.Errorf("Error while get iface from %s", out)
+		return "", fmt.Errorf("File error: %v\n", err)
 	}
-	if l := strings.Split(string(out), "="); len(l) == 2 {
-		iface := l[1]
-		return strings.TrimSpace(iface), nil
+	var s settings
+	if err := json.Unmarshal(file, &s); err != nil {
+		return "", fmt.Errorf("Error while try to parse json(%s): %q", file, err)
 	}
-	return "", fmt.Errorf("Error while get iface from %s", out)
+	// out, err := exec.Command("bash", "-c", "source /etc/sysconfig/flanneld && echo $FLANNEL_OPTIONS").CombinedOutput()
+	// if err != nil {
+	// return "", fmt.Errorf("Error while get iface from %s", out)
+	// }
+	// if l := strings.Split(string(out), "="); len(l) == 2 {
+	// iface := l[1]
+	// return strings.TrimSpace(iface), nil
+	// }
+	// return "", fmt.Errorf("Error while get iface from %s", out)
+	return s.NetworkInterface, nil
 }
 
 // Add or delete publicIP on network interface depending on action.
