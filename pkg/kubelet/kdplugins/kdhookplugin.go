@@ -9,22 +9,33 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path"
 	"strconv"
-	"strings"
 
 	"github.com/golang/glog"
 	"k8s.io/kubernetes/pkg/api"
 )
 
 type KDHookPlugin struct {
+	settings settings
+}
+
+func NewKDHookPlugin() *KDHookPlugin {
+	s, err := getSettings()
+	if err != nil {
+		// TODO: maybe better to just panic in this place
+		glog.Errorf("Can't get config: %+v", err)
+	}
+	return &KDHookPlugin{settings: s}
 }
 
 func (p *KDHookPlugin) OnContainerCreatedInPod(container *api.Container, pod *api.Pod) {
 	glog.V(4).Infof(">>>>>>>>>>> Container %q created in pod! %q", container.Name, pod.Name)
 }
 
-const fsLimitPath string = "/var/lib/kuberdock/scripts/fslimit.py"
-const kdConfPath string = "/usr/libexec/kubernetes/kubelet-plugins/net/exec/kuberdock/kuberdock.json"
+const kdPath string = "/var/lib/kuberdock/"
+const kdScriptsDir string = "scripts"
+const kdConf string = "kuberdock.json"
 
 type volumeSpec struct {
 	Path string  `json:"path"`
@@ -64,6 +75,7 @@ type settings struct {
 	NonFloatingFublicIPs string `json:"nonfloating_public_ips"`
 	Master               string `json:"master"`
 	Node                 string `json:"node"`
+	NetworkInterface     string `json:"network_interface"`
 	Token                string `json:"token"`
 }
 
@@ -72,23 +84,27 @@ type kdResponse struct {
 	Data   string `json:"data"`
 }
 
+func getSettings() (settings, error) {
+	var s settings
+	file, err := ioutil.ReadFile(path.Join(kdPath, kdConf))
+	if err != nil {
+		return s, err
+	}
+	if err := json.Unmarshal(file, &s); err != nil {
+		return s, err
+	}
+	return s, nil
+}
+
 // Call KuberDock API to get free publicIP for this node.
 // Return publicIP as string and error as nil
 // or empty string with error if can't get one.
-func getNonFloatingIP(pod *api.Pod) (string, error) {
-	file, err := ioutil.ReadFile(kdConfPath)
-	if err != nil {
-		return "", fmt.Errorf("File error: %v\n", err)
-	}
-	var s settings
-	if err := json.Unmarshal(file, &s); err != nil {
-		return "", fmt.Errorf("Error while try to parse json(%s): %q", file, err)
-	}
+func (p *KDHookPlugin) getNonFloatingIP(pod *api.Pod) (string, error) {
 	tr := &http.Transport{
 		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
 	}
 	client := &http.Client{Transport: tr}
-	url := fmt.Sprintf("https://%s/api/ippool/get-public-ip/%s/%s?token=%s", s.Master, s.Node, pod.Namespace, s.Token)
+	url := fmt.Sprintf("https://%s/api/ippool/get-public-ip/%s/%s?token=%s", p.settings.Master, p.settings.Node, pod.Namespace, p.settings.Token)
 	resp, err := client.Get(url)
 	if err != nil {
 		return "", fmt.Errorf("Error while http.get: %q", err)
@@ -112,7 +128,7 @@ func getNonFloatingIP(pod *api.Pod) (string, error) {
 // Get publicIP from pod labels or acquire non-floating IP.
 // Return publicIP as string and error nil
 // or empty string with error, if can't get one
-func getPublicIP(pod *api.Pod) (string, error) {
+func (p *KDHookPlugin) getPublicIP(pod *api.Pod) (string, error) {
 	publicIP, ok := pod.Labels["kuberdock-public-ip"]
 	if !ok {
 		return "", errors.New("No kuberdock-public-ip label found")
@@ -120,7 +136,7 @@ func getPublicIP(pod *api.Pod) (string, error) {
 	if publicIP != "true" {
 		return publicIP, nil
 	}
-	publicIP, err := getNonFloatingIP(pod)
+	publicIP, err := p.getNonFloatingIP(pod)
 	if err != nil {
 		return "", err
 	}
@@ -132,42 +148,21 @@ func (p *KDHookPlugin) OnPodRun(pod *api.Pod) {
 	if specs := getVolumeSpecs(pod); specs != nil {
 		processLocalStorages(specs)
 	}
-	if publicIP, err := getPublicIP(pod); err == nil {
-		handlePublicIP("add", publicIP)
+	if publicIP, err := p.getPublicIP(pod); err == nil {
+		p.handlePublicIP("add", publicIP)
 	}
-}
-
-// Get network interface, where we need to add publicIP.
-// Return network interface name as string and error as nil
-// or empty string with error if can't get one.
-func getIFace() (string, error) {
-	// TODO: find the better way to get flannel network interface
-	out, err := exec.Command("bash", "-c", "source /etc/sysconfig/flanneld && echo $FLANNEL_OPTIONS").CombinedOutput()
-	if err != nil {
-		return "", fmt.Errorf("Error while get iface from %s", out)
-	}
-	if l := strings.Split(string(out), "="); len(l) == 2 {
-		iface := l[1]
-		return strings.TrimSpace(iface), nil
-	}
-	return "", fmt.Errorf("Error while get iface from %s", out)
 }
 
 // Add or delete publicIP on network interface depending on action.
 // Action can be add or del strings.
-func handlePublicIP(action string, publicIP string) {
-	iface, err := getIFace()
-	if err != nil {
-		glog.V(4).Info(err)
-		return
-	}
-	out, err := exec.Command("ip", "addr", action, publicIP+"/32", "dev", iface).CombinedOutput()
+func (p *KDHookPlugin) handlePublicIP(action string, publicIP string) {
+	out, err := exec.Command("ip", "addr", action, publicIP+"/32", "dev", p.settings.NetworkInterface).CombinedOutput()
 	if err != nil {
 		glog.V(4).Infof("Error while try to %s publicIP(%s): %q, %s", action, publicIP, err, out)
 		return
 	}
 	if action == "add" {
-		out, err := exec.Command("arping", "-I", iface, "-A", publicIP, "-c", "10", "-w", "1").CombinedOutput()
+		out, err := exec.Command("arping", "-I", p.settings.NetworkInterface, "-A", publicIP, "-c", "10", "-w", "1").CombinedOutput()
 		if err != nil {
 			glog.V(4).Infof("Error while try to arping: %q:%s", err, out)
 		}
@@ -180,10 +175,7 @@ func handlePublicIP(action string, publicIP string) {
 func processLocalStorages(specs []volumeSpec) {
 	for _, spec := range specs {
 		if err := createVolume(spec); err != nil {
-			continue
-		}
-		if err := applyFSLimits(spec); err != nil {
-			continue
+			glog.Errorf("Can't create volume for %q, %q", spec, err)
 		}
 	}
 }
@@ -193,26 +185,18 @@ func processLocalStorages(specs []volumeSpec) {
 // Return error as nil if has no problem
 // or return error.
 func createVolume(spec volumeSpec) error {
-	if err := os.MkdirAll(spec.Path, 0755); err != nil {
-		glog.V(4).Infof("Error, while mkdir: %q", err)
-		return err
-	}
-	err := exec.Command("chcon", "-Rt", "svirt_sandbox_file_t", spec.Path).Run()
+	env := os.Environ()
+	env = append(env, "PYTHONPATH="+path.Join(kdPath, kdScriptsDir))
+	size := strconv.Itoa(int(spec.Size))
+	cmd := exec.Command("/usr/bin/env", "python2", "-m", "node_storage_manage.manage", "create-volume", "--path", spec.Path, "--quota", size)
+	cmd.Env = env
+	out, err := cmd.CombinedOutput()
 	if err != nil {
-		glog.V(4).Infof("Error, while chcon: %q", err)
-		return err
+		return fmt.Errorf("Error while create volume: %q, %q", err, out)
 	}
-	return nil
-}
-
-// Apply quota to path with size in Gb.
-// Return error as nil if has no problem or
-// return error.
-func applyFSLimits(spec volumeSpec) error {
-	err := exec.Command("/usr/bin/env", "python2", fsLimitPath, "storage", spec.Path+"="+strconv.Itoa(int(spec.Size))+"g").Run()
+	err = exec.Command("chcon", "-Rt", "svirt_sandbox_file_t", spec.Path).Run()
 	if err != nil {
-		glog.V(4).Infof("Error, while call fslimit: %q\n", err)
-		return err
+		return fmt.Errorf("Error while chcon: %q", err)
 	}
 	return nil
 }
@@ -220,8 +204,8 @@ func applyFSLimits(spec volumeSpec) error {
 func (p *KDHookPlugin) OnPodKilled(pod *api.Pod) {
 	if pod != nil {
 		glog.V(4).Infof(">>>>>>>>>>> Pod %q killed", pod.Name)
-		if publicIP, err := getPublicIP(pod); err == nil {
-			handlePublicIP("del", publicIP)
+		if publicIP, err := p.getPublicIP(pod); err == nil {
+			p.handlePublicIP("del", publicIP)
 		}
 	}
 }
