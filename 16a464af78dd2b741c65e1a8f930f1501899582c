@@ -1,0 +1,9 @@
+Verified+1: alternatives internal <alternatives@cloudlinux.com>
+Code-Review+1: Aleksandr Skorodumov <askorodumov@cloudlinux.com>
+Code-Review+2: Stanislav Sergiienko <ssergiienko@cloudlinux.com>
+Verified+1: Stanislav Sergiienko <ssergiienko@cloudlinux.com>
+Submitted-by: Stanislav Sergiienko <ssergiienko@cloudlinux.com>
+Submitted-at: Fri, 09 Sep 2016 12:25:16 +0300
+Reviewed-on: https://gerrit.cloudlinux.com/11794
+Project: kubernetes-kuberdock
+Branch: refs/heads/kubelet-plugin
