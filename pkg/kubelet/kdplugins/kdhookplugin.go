@@ -22,20 +22,29 @@ import (
 	docker "github.com/fsouza/go-dockerclient"
 	"github.com/golang/glog"
 	"k8s.io/kubernetes/pkg/api"
+	clientset "k8s.io/kubernetes/pkg/client/clientset_generated/internalclientset"
 )
 
 type KDHookPlugin struct {
 	dockerClient *docker.Client
+	kubeClient   clientset.Interface
 }
 
-func NewKDHookPlugin(dockerClient *docker.Client) *KDHookPlugin {
-	return &KDHookPlugin{dockerClient: dockerClient}
+func NewKDHookPlugin(dockerClient *docker.Client, kc clientset.Interface) *KDHookPlugin {
+	return &KDHookPlugin{dockerClient: dockerClient, kubeClient: kc}
 }
 
 func (p *KDHookPlugin) OnContainerCreatedInPod(containerId string, container *api.Container, pod *api.Pod) {
 	glog.V(3).Infof(">>>>>>>>>>> Container %q(%q) created in pod! %q", container.Name, containerId, pod.Name)
+	if p.getVolumeFillStatus(pod) == "success" {
+		glog.V(3).Infoln(">>>>>>>>>>> %q Pod was already prefilled with content", pod.Name)
+		return
+	}
 	if err := p.prefillVolumes(containerId, container, pod); err != nil {
 		glog.Errorf(">>>>>>>>>>> Can't prefill volumes: %+v", err)
+		p.setVolumeFillStatus(pod, "failed")
+	} else {
+		p.setVolumeFillStatus(pod, "success")
 	}
 }
 
@@ -49,6 +58,29 @@ func (p *KDHookPlugin) prefillVolumes(containerId string, container *api.Contain
 		return fmt.Errorf("can't fill volumes for %s(%s): %+v", container.Name, containerId, err)
 	}
 	return nil
+}
+
+func (p *KDHookPlugin) setVolumeFillStatus(pod *api.Pod, status string) {
+	for {
+		pod, err := p.kubeClient.Core().Pods(pod.Namespace).Get(pod.Name)
+		if err != nil {
+			continue
+		}
+		pod.ObjectMeta.Annotations["kuberdock-volume-fill-status"] = status
+		pod, err = p.kubeClient.Core().Pods(pod.Namespace).Update(pod)
+		if err != nil {
+			glog.Errorf(">>>>>>> Can't update pod %+v", err)
+		}
+		glog.V(3).Infof(">>>>>>>>>>>  %+v", pod)
+		break
+	}
+}
+
+func (p *KDHookPlugin) getVolumeFillStatus(pod *api.Pod) string {
+	if status, ok := pod.ObjectMeta.Annotations["kuberdock-volume-fill-status"]; ok {
+		return status
+	}
+	return "in_progress"
 }
 
 func (p *KDHookPlugin) fillVolumes(volumes []api.Volume, volumeMounts []api.VolumeMount, lowerDir string) error {
