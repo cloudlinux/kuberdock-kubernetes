@@ -95,7 +95,7 @@ readonly GCS_STAGE="${LOCAL_OUTPUT_ROOT}/gcs-stage"
 # Get the set of master binaries that run in Docker (on Linux)
 # Entry format is "<name-of-binary>,<base-image>".
 # Binaries are placed in /usr/local/bin inside the image.
-# 
+#
 # $1 - server architecture
 kube::build::get_docker_wrapped_binaries() {
   case $1 in
@@ -175,6 +175,10 @@ function kube::build::verify_prereqs() {
 
 function kube::build::docker_available_on_osx() {
   if [[ -z "${DOCKER_HOST}" ]]; then
+    if [[ -S "/var/run/docker.sock" ]]; then
+      kube::log::status "Using Docker for MacOS"
+      return 0
+    fi
     kube::log::status "No docker host is set. Checking options for setting one..."
 
     if [[ -z "$(which docker-machine)" && -z "$(which boot2docker)" ]]; then

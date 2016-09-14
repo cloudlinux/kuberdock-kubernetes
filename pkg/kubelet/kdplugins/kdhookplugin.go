@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -22,50 +23,82 @@ import (
 	docker "github.com/fsouza/go-dockerclient"
 	"github.com/golang/glog"
 	"k8s.io/kubernetes/pkg/api"
+	clientset "k8s.io/kubernetes/pkg/client/clientset_generated/internalclientset"
 )
 
+// KDHookPlugin incapsulates various hooks needed for KuberDock
 type KDHookPlugin struct {
 	dockerClient *docker.Client
+	kubeClient   clientset.Interface
 }
 
-func NewKDHookPlugin(dockerClient *docker.Client) *KDHookPlugin {
-	return &KDHookPlugin{dockerClient: dockerClient}
+// NewKDHookPlugin creates an instance of KuberDock plugin hook
+func NewKDHookPlugin(dockerClient *docker.Client, kc clientset.Interface) *KDHookPlugin {
+	return &KDHookPlugin{dockerClient: dockerClient, kubeClient: kc}
 }
 
-func (p *KDHookPlugin) OnContainerCreatedInPod(containerId string, container *api.Container, pod *api.Pod) {
-	glog.V(3).Infof(">>>>>>>>>>> Container %q(%q) created in pod! %q", container.Name, containerId, pod.Name)
-	if err := p.prefillVolumes(containerId, container, pod); err != nil {
+// OnContainerCreatedInPod is handler which is responsible for prefilling persisntent volumes wit the contents from folder of docker images they are being mounted to
+func (p *KDHookPlugin) OnContainerCreatedInPod(containerID string, container *api.Container, pod *api.Pod) {
+	glog.V(3).Infof(">>>>>>>>>>> Container %q(%q) created in pod! %q", container.Name, containerID, pod.Name)
+	if err := p.prefillVolumes(containerID, container, pod); err != nil {
 		glog.Errorf(">>>>>>>>>>> Can't prefill volumes: %+v", err)
 	}
 }
 
-func (p *KDHookPlugin) prefillVolumes(containerId string, container *api.Container, pod *api.Pod) error {
+func (p *KDHookPlugin) prefillVolumes(containerID string, container *api.Container, pod *api.Pod) error {
 	glog.V(3).Infoln(">>>>>>>>>>> Prefilling volumes...")
-	dockerContainer, err := p.dockerClient.InspectContainer(containerId)
+	dockerContainer, err := p.dockerClient.InspectContainer(containerID)
 	if err != nil {
 		return err
 	}
-	if err := p.fillVolumes(pod.Spec.Volumes, container.VolumeMounts, dockerContainer.GraphDriver.Data["LowerDir"]); err != nil {
-		return fmt.Errorf("can't fill volumes for %s(%s): %+v", container.Name, containerId, err)
+
+	var volumesToPrefill []string
+
+	if vtpf, ok := pod.Annotations["copyFromImage"]; ok {
+		if err := json.Unmarshal([]byte(vtpf), &volumesToPrefill); err != nil {
+			glog.V(4).Infof("Unable to parse copyFromImage annotation (%s): %q", vtpf, err)
+			return err
+		}
+	}
+
+	if len(volumesToPrefill) == 0 {
+		glog.V(4).Infof("Nothing to prefill. Exiting")
+		return nil
+	}
+
+	if err := p.fillVolumes(pod.Spec.Volumes, container.VolumeMounts, dockerContainer.GraphDriver.Data["LowerDir"], volumesToPrefill); err != nil {
+		return fmt.Errorf("can't fill volumes for %s(%s): %+v", container.Name, containerID, err)
 	}
 	return nil
 }
 
-func (p *KDHookPlugin) fillVolumes(volumes []api.Volume, volumeMounts []api.VolumeMount, lowerDir string) error {
+func (p *KDHookPlugin) fillVolumes(volumes []api.Volume, volumeMounts []api.VolumeMount, lowerDir string, volumesToPrefill []string) error {
 	type volumePair struct {
 		volumePath      string
 		volumeMountPath string
 	}
 
+	shouldBePrefilled := func(volumeName string) bool {
+		for _, name := range volumesToPrefill {
+			if name == volumeName {
+				return true
+			}
+		}
+		return false
+	}
+
 	var mounts []volumePair
 	for _, vm := range volumeMounts {
+		if !shouldBePrefilled(vm.Name) {
+			continue
+		}
 		for _, v := range volumes {
 			if vm.Name == v.Name {
 				path, err := getVolumePath(v)
 				if err != nil {
 					return fmt.Errorf("can't get volume path: %+v", err)
 				}
-				if path != "" && !isDirEmpty(path) {
+				if path != "" && wasPrefillSuccesfull(path) {
 					continue
 				}
 				mounts = append(mounts, volumePair{volumePath: path, volumeMountPath: vm.MountPath})
@@ -83,7 +116,12 @@ func (p *KDHookPlugin) fillVolumes(volumes []api.Volume, volumeMounts []api.Volu
 		if !isDirEmpty(srcDir) {
 			glog.V(4).Infof(">>>>>>>>>>> Filling volumes: copying from %s to %s", srcDir, dstDir)
 			if out, err := exec.Command("cp", "-a", srcDir+"/.", dstDir).CombinedOutput(); err != nil {
-				fmt.Errorf("can't copy from %s to %s: %+v (%s)", srcDir, dstDir, err, out)
+				glog.Errorf("can't copy from %s to %s: %+v (%s)", srcDir, dstDir, err, out)
+			}
+			err := markPreffilWasSuccessfull(dstDir)
+			if err != nil {
+				glog.Errorf(">>>>>>>>>>> Could not create a prefill lock: %+v", err)
+				return err
 			}
 		}
 	}
@@ -116,7 +154,7 @@ func getCephPath(volume api.Volume) (string, error) {
 		return "", err
 	}
 	var rbdResp rbdMaps
-	if err := json.Unmarshal(resp, &rbdResp); err != nil {
+	if err = json.Unmarshal(resp, &rbdResp); err != nil {
 		return "", err
 	}
 	var device string
@@ -183,6 +221,24 @@ func isDirEmpty(path string) bool {
 	return false
 }
 
+func markPreffilWasSuccessfull(hostPath string) error {
+	fullPath := path.Join(hostPath, ".kd_prefill_succeded")
+	f, err := os.Create(fullPath)
+	if err != nil {
+		return err
+	}
+	f.Close()
+	return nil
+}
+
+func wasPrefillSuccesfull(hostPath string) bool {
+	fullPath := path.Join(hostPath, ".kd_prefill_succeded")
+	if _, err := os.Stat(fullPath); err == nil {
+		return true
+	}
+	return false
+}
+
 const fsLimitPath string = "/var/lib/kuberdock/scripts/fslimit.py"
 const kdConfPath string = "/usr/libexec/kubernetes/kubelet-plugins/net/exec/kuberdock/kuberdock.json"
 
@@ -212,24 +268,23 @@ func getVolumeSpecs(pod *api.Pod) []volumeSpec {
 		if err := json.Unmarshal([]byte(va), &data); err != nil {
 			glog.V(4).Infof("Error while try to parse json(%s): %q", va, err)
 			return nil
-		} else {
-			specs := make([]volumeSpec, 0, len(data))
-			for _, volume := range data {
-				if volume.LocalStorage != nil && (volume.LocalStorage.Path != "" && volume.LocalStorage.Name != "") {
-					if volume.LocalStorage.Size == 0 {
-						volume.LocalStorage.Size = 1
-					}
-					spec := volumeSpec{
-						Path:      volume.LocalStorage.Path,
-						Name:      volume.LocalStorage.Name,
-						Size:      volume.LocalStorage.Size,
-						BackupURL: volume.BackupURL,
-					}
-					specs = append(specs, spec)
-				}
-			}
-			return specs
 		}
+		specs := make([]volumeSpec, 0, len(data))
+		for _, volume := range data {
+			if volume.LocalStorage != nil && (volume.LocalStorage.Path != "" && volume.LocalStorage.Name != "") {
+				if volume.LocalStorage.Size == 0 {
+					volume.LocalStorage.Size = 1
+				}
+				spec := volumeSpec{
+					Path:      volume.LocalStorage.Path,
+					Name:      volume.LocalStorage.Name,
+					Size:      volume.LocalStorage.Size,
+					BackupURL: volume.BackupURL,
+				}
+				specs = append(specs, spec)
+			}
+		}
+		return specs
 	}
 	return nil
 }
@@ -255,7 +310,7 @@ func getNonFloatingIP(pod *api.Pod) (string, error) {
 		return "", fmt.Errorf("File error: %v\n", err)
 	}
 	var s settings
-	if err := json.Unmarshal(file, &s); err != nil {
+	if err = json.Unmarshal(file, &s); err != nil {
 		return "", fmt.Errorf("Error while try to parse json(%s): %q", file, err)
 	}
 	tr := &http.Transport{
@@ -301,6 +356,7 @@ func getPublicIP(pod *api.Pod) (string, error) {
 	return publicIP, nil
 }
 
+// OnPodRun handles public IP for a pod and prepares persisntent volume
 func (p *KDHookPlugin) OnPodRun(pod *api.Pod) {
 	glog.V(3).Infof(">>>>>>>>>>> Pod %q run!", pod.Name)
 	if specs := getVolumeSpecs(pod); specs != nil {
@@ -617,6 +673,7 @@ func applyFSLimits(spec volumeSpec) error {
 	return nil
 }
 
+// OnPodKilled releases public IP when the pod is killed
 func (p *KDHookPlugin) OnPodKilled(pod *api.Pod) {
 	if pod != nil {
 		glog.V(3).Infof(">>>>>>>>>>> Pod %q killed", pod.Name)
