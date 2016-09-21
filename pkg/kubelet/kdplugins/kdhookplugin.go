@@ -326,6 +326,7 @@ func (p *KDHookPlugin) OnPodRun(pod *api.Pod) {
 // Add or delete publicIP on network interface depending on action.
 // Action can be add or del strings.
 func (p *KDHookPlugin) handlePublicIP(action string, publicIP string) {
+	glog.V(4).Infof("try to %s publicIP(%s)", action, publicIP)
 	out, err := exec.Command("ip", "addr", action, publicIP+"/32", "dev", p.settings.NetworkInterface).CombinedOutput()
 	if err != nil {
 		glog.V(4).Infof("Error while try to %s publicIP(%s): %q, %s", action, publicIP, err, out)
