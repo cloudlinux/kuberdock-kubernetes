@@ -1,0 +1,7 @@
+Verified+1: alternatives internal <alternatives@cloudlinux.com>
+Code-Review+2: Stanislav Sergiienko <ssergiienko@cloudlinux.com>
+Submitted-by: Stanislav Sergiienko <ssergiienko@cloudlinux.com>
+Submitted-at: Fri, 28 Oct 2016 15:42:27 +0300
+Reviewed-on: https://gerrit.cloudlinux.com/13495
+Project: kubernetes-kuberdock
+Branch: refs/heads/release-1.2-kuberdock
