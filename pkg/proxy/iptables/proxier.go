@@ -804,9 +804,15 @@ func (proxier *Proxier) syncProxyRules() {
 			// If the "external" IP happens to be an IP that is local to this
 			// machine, hold the local port open so no other process can open it
 			// (because the socket might open but it would never work).
-			if local, err := isLocalIP(externalIP); err != nil {
+			//
+			// For Kuberdock PublicIPs we don't need this guard. See AC-5134
+			// So we just replace here "local" with "_" and "false" so openLocalPort
+			// here is never happens. This will route all traffic from pod's PublicIP
+			// to pod even if something already listen 0.0.0.0:same_port on this 
+			// node (like sshd for 22 port)
+			if _, err := isLocalIP(externalIP); err != nil {
 				glog.Errorf("can't determine if IP is local, assuming not: %v", err)
-			} else if local {
+			} else if false {
 				lp := localPort{
 					desc:     "externalIP for " + svcName.String(),
 					ip:       externalIP,

@@ -41,7 +41,7 @@
 
 Name:		kubernetes
 Version:	%{kube_version}
-Release:	6%{?dist}.cloudlinux
+Release:	7%{?dist}.cloudlinux
 Epoch:      1
 Summary:    Container cluster management
 License:    ASL 2.0
