@@ -832,7 +832,7 @@ func (proxier *Proxier) syncProxyRules() {
 				"--dport", fmt.Sprintf("%d", svcInfo.port),
 			}
 			// We have to SNAT packets to external IPs.
-			writeLine(natRules, append(args, "-j", string(kubeMarkMasqChain))...)
+			// writeLine(natRules, append(args, "-j", string(kubeMarkMasqChain))...)
 
 			// Allow traffic for external IPs that does not come from a bridge (i.e. not from a container)
 			// nor from a local process to be forwarded to the service.
