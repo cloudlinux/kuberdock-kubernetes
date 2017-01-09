@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Copyright 2015 The Kubernetes Authors All rights reserved.
+# Copyright 2015 The Kubernetes Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -25,9 +25,30 @@ KUBE_ROOT=$(dirname "${BASH_SOURCE}")/../..
 
 export KUBECTL KUBE_CONFIG_FILE
 
-source "${KUBE_ROOT}/cluster/kube-env.sh"
-source "${KUBE_ROOT}/cluster/${KUBERNETES_PROVIDER}/util.sh"
+source "${KUBE_ROOT}/cluster/kube-util.sh"
 
 prepare-e2e
 
-test-teardown
+if [[ "${FEDERATION:-}" == "true" ]];then
+  source "${KUBE_ROOT}/federation/cluster/common.sh"
+  for zone in ${E2E_ZONES};do
+    # bring down an e2e cluster
+    (
+      set-federation-zone-vars "$zone"
+      cleanup-federation-api-objects || echo "Couldn't cleanup federation api objects"
+
+      # TODO(madhusudancs): This is an arbitrary amount of sleep to give Kubernetes
+      # clusters enough time to delete the underlying cloud provider resources
+      # corresponding to the Kubernetes resources we deleted as part of the test
+      # teardowns. It is shameful that we are doing this, but this is just a bandage
+      # to stop the bleeding. Please don't use this pattern anywhere. Remove this
+      # when proper cloud provider cleanups are implemented in the individual test
+      # `AfterEach` blocks.
+      sleep 2m
+
+      test-teardown
+    )
+done
+else
+  test-teardown
+fi

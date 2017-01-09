@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Copyright 2014 The Kubernetes Authors All rights reserved.
+# Copyright 2014 The Kubernetes Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -16,7 +16,7 @@
 
 
 MASTER_ADDRESS=${1:-"8.8.8.18"}
-ETCD_SERVERS=${2:-"http://8.8.8.18:4001"}
+ETCD_SERVERS=${2:-"http://8.8.8.18:2379"}
 SERVICE_CLUSTER_IP_RANGE=${3:-"10.10.10.0/24"}
 ADMISSION_CONTROL=${4:-""}
 
@@ -27,7 +27,7 @@ KUBE_LOGTOSTDERR="--logtostderr=true"
 # --v=0: log level for V logs
 KUBE_LOG_LEVEL="--v=4"
 
-# --etcd-servers=[]: List of etcd servers to watch (http://ip:port), 
+# --etcd-servers=[]: List of etcd servers to watch (http://ip:port),
 # comma separated. Mutually exclusive with -etcd-config
 KUBE_ETCD_SERVERS="--etcd-servers=${ETCD_SERVERS}"
 
@@ -40,23 +40,23 @@ KUBE_API_PORT="--insecure-port=8080"
 # --kubelet-port=10250: Kubelet port
 NODE_PORT="--kubelet-port=10250"
 
-# --advertise-address=<nil>: The IP address on which to advertise 
+# --advertise-address=<nil>: The IP address on which to advertise
 # the apiserver to members of the cluster.
 KUBE_ADVERTISE_ADDR="--advertise-address=${MASTER_ADDRESS}"
 
 # --allow-privileged=false: If true, allow privileged containers.
 KUBE_ALLOW_PRIV="--allow-privileged=false"
 
-# --service-cluster-ip-range=<nil>: A CIDR notation IP range from which to assign service cluster IPs. 
+# --service-cluster-ip-range=<nil>: A CIDR notation IP range from which to assign service cluster IPs.
 # This must not overlap with any IP ranges assigned to nodes for pods.
 KUBE_SERVICE_ADDRESSES="--service-cluster-ip-range=${SERVICE_CLUSTER_IP_RANGE}"
 
-# --admission-control="AlwaysAdmit": Ordered list of plug-ins 
-# to do admission control of resources into cluster. 
-# Comma-delimited list of: 
-#   LimitRanger, AlwaysDeny, SecurityContextDeny, NamespaceExists, 
+# --admission-control="AlwaysAdmit": Ordered list of plug-ins
+# to do admission control of resources into cluster.
+# Comma-delimited list of:
+#   LimitRanger, AlwaysDeny, SecurityContextDeny, NamespaceExists,
 #   NamespaceLifecycle, NamespaceAutoProvision,
-#   AlwaysAdmit, ServiceAccount, ResourceQuota
+#   AlwaysAdmit, ServiceAccount, ResourceQuota, DefaultStorageClass
 KUBE_ADMISSION_CONTROL="--admission-control=${ADMISSION_CONTROL}"
 
 # --client-ca-file="": If set, any request presenting a client certificate signed
@@ -105,4 +105,4 @@ EOF
 
 systemctl daemon-reload
 systemctl enable kube-apiserver
-systemctl start kube-apiserver
+systemctl restart kube-apiserver

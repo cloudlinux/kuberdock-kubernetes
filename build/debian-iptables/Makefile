@@ -1,4 +1,4 @@
-# Copyright 2016 The Kubernetes Authors All rights reserved.
+# Copyright 2016 The Kubernetes Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -16,7 +16,7 @@
 
 REGISTRY?="gcr.io/google_containers"
 IMAGE=debian-iptables
-TAG=v3
+TAG=v5
 ARCH?=amd64
 TEMP_DIR:=$(shell mktemp -d)
 
@@ -35,6 +35,10 @@ ifeq ($(ARCH),ppc64le)
 	BASEIMAGE?=ppc64le/debian:jessie
 	QEMUARCH=ppc64le
 endif
+ifeq ($(ARCH),s390x)
+	BASEIMAGE?=s390x/debian:jessie
+	QEMUARCH=s390x
+endif
 
 build:
 	cp ./* $(TEMP_DIR)
@@ -48,13 +52,13 @@ else
 	# When cross-building, only the placeholder "CROSS_BUILD_" should be removed
 	# Register /usr/bin/qemu-ARCH-static as the handler for ARM binaries in the kernel
 	docker run --rm --privileged multiarch/qemu-user-static:register --reset
-	curl -sSL https://github.com/multiarch/qemu-user-static/releases/download/v2.5.0/x86_64_qemu-$(QEMUARCH)-static.tar.xz | tar -xJ -C $(TEMP_DIR)
+	curl -sSL https://github.com/multiarch/qemu-user-static/releases/download/v2.6.0/x86_64_qemu-$(QEMUARCH)-static.tar.gz | tar -xz -C $(TEMP_DIR)
 	cd $(TEMP_DIR) && sed -i "s/CROSS_BUILD_//g" Dockerfile
 endif
 
-	docker build -t $(REGISTRY)/$(IMAGE)-$(ARCH):$(TAG) $(TEMP_DIR)
+	docker build --pull -t $(REGISTRY)/$(IMAGE)-$(ARCH):$(TAG) $(TEMP_DIR)
 
 push: build
-	gcloud docker push $(REGISTRY)/$(IMAGE)-$(ARCH):$(TAG)
+	gcloud docker -- push $(REGISTRY)/$(IMAGE)-$(ARCH):$(TAG)
 
 all: push

@@ -1,5 +1,5 @@
 /*
-Copyright 2014 The Kubernetes Authors All rights reserved.
+Copyright 2014 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -18,10 +18,12 @@ package util
 
 import (
 	"testing"
+
+	"k8s.io/apimachinery/pkg/util/diff"
 )
 
 func TestStringDiff(t *testing.T) {
-	diff := StringDiff("aaabb", "aaacc")
+	diff := diff.StringDiff("aaabb", "aaacc")
 	expect := "aaa\n\nA: bb\n\nB: cc\n\n"
 	if diff != expect {
 		t.Errorf("diff returned %v", diff)

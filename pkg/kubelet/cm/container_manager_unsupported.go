@@ -1,7 +1,7 @@
-// +build !linux
+// +build !linux,!windows
 
 /*
-Copyright 2015 The Kubernetes Authors All rights reserved.
+Copyright 2015 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -21,7 +21,7 @@ package cm
 import (
 	"fmt"
 
-	"k8s.io/kubernetes/pkg/api"
+	"k8s.io/kubernetes/pkg/api/v1"
 	"k8s.io/kubernetes/pkg/kubelet/cadvisor"
 	"k8s.io/kubernetes/pkg/util/mount"
 )
@@ -31,22 +31,34 @@ type unsupportedContainerManager struct {
 
 var _ ContainerManager = &unsupportedContainerManager{}
 
-func (unsupportedContainerManager) Start() error {
+func (unsupportedContainerManager) Start(_ *v1.Node) error {
 	return fmt.Errorf("Container Manager is unsupported in this build")
 }
 
-func (unsupportedContainerManager) SystemCgroupsLimit() api.ResourceList {
-	return api.ResourceList{}
+func (unsupportedContainerManager) SystemCgroupsLimit() v1.ResourceList {
+	return v1.ResourceList{}
 }
 
 func (unsupportedContainerManager) GetNodeConfig() NodeConfig {
 	return NodeConfig{}
 }
 
+func (unsupportedContainerManager) GetMountedSubsystems() *CgroupSubsystems {
+	return &CgroupSubsystems{}
+}
+
+func (unsupportedContainerManager) GetQOSContainersInfo() QOSContainersInfo {
+	return QOSContainersInfo{}
+}
+
 func (cm *unsupportedContainerManager) Status() Status {
 	return Status{}
 }
 
-func NewContainerManager(_ mount.Interface, _ cadvisor.Interface, _ NodeConfig) (ContainerManager, error) {
+func (cm *unsupportedContainerManager) NewPodContainerManager() PodContainerManager {
+	return &unsupportedPodContainerManager{}
+}
+
+func NewContainerManager(_ mount.Interface, _ cadvisor.Interface, _ NodeConfig, failSwapOn bool) (ContainerManager, error) {
 	return &unsupportedContainerManager{}, nil
 }

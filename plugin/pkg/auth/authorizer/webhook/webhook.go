@@ -1,5 +1,5 @@
 /*
-Copyright 2016 The Kubernetes Authors All rights reserved.
+Copyright 2016 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -18,35 +18,43 @@ limitations under the License.
 package webhook
 
 import (
-	"errors"
-	"fmt"
+	"encoding/json"
+	"time"
 
-	"k8s.io/kubernetes/pkg/api"
-	"k8s.io/kubernetes/pkg/api/unversioned"
-	"k8s.io/kubernetes/pkg/apimachinery/registered"
-	"k8s.io/kubernetes/pkg/apis/authorization/v1beta1"
-	"k8s.io/kubernetes/pkg/auth/authorizer"
-	"k8s.io/kubernetes/pkg/client/restclient"
-	"k8s.io/kubernetes/pkg/client/unversioned/clientcmd"
-	"k8s.io/kubernetes/pkg/runtime"
-	"k8s.io/kubernetes/pkg/runtime/serializer/json"
-	"k8s.io/kubernetes/pkg/runtime/serializer/versioning"
+	"github.com/golang/glog"
 
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apiserver/pkg/authorization/authorizer"
+	"k8s.io/apiserver/pkg/util/cache"
+	authorizationclient "k8s.io/client-go/kubernetes/typed/authorization/v1beta1"
+	authorization "k8s.io/client-go/pkg/apis/authorization/v1beta1"
+
+	"k8s.io/apiserver/pkg/webhook"
+
+	_ "k8s.io/client-go/pkg/apis/authorization/install"
 	_ "k8s.io/kubernetes/pkg/apis/authorization/install"
 )
 
 var (
-	encodeVersions = []unversioned.GroupVersion{v1beta1.SchemeGroupVersion}
-	decodeVersions = []unversioned.GroupVersion{v1beta1.SchemeGroupVersion}
-
-	requireEnabled = []unversioned.GroupVersion{v1beta1.SchemeGroupVersion}
+	groupVersions = []schema.GroupVersion{authorization.SchemeGroupVersion}
 )
+
+const retryBackoff = 500 * time.Millisecond
 
 // Ensure Webhook implements the authorizer.Authorizer interface.
 var _ authorizer.Authorizer = (*WebhookAuthorizer)(nil)
 
 type WebhookAuthorizer struct {
-	restClient *restclient.RESTClient
+	subjectAccessReview authorizationclient.SubjectAccessReviewInterface
+	responseCache       *cache.LRUExpireCache
+	authorizedTTL       time.Duration
+	unauthorizedTTL     time.Duration
+	initialBackoff      time.Duration
+}
+
+// NewFromInterface creates a WebhookAuthorizer using the given subjectAccessReview client
+func NewFromInterface(subjectAccessReview authorizationclient.SubjectAccessReviewInterface, authorizedTTL, unauthorizedTTL time.Duration) (*WebhookAuthorizer, error) {
+	return newWithBackoff(subjectAccessReview, authorizedTTL, unauthorizedTTL, retryBackoff)
 }
 
 // New creates a new WebhookAuthorizer from the provided kubeconfig file.
@@ -69,33 +77,23 @@ type WebhookAuthorizer struct {
 //
 // For additional HTTP configuration, refer to the kubeconfig documentation
 // http://kubernetes.io/v1.1/docs/user-guide/kubeconfig-file.html.
-func New(kubeConfigFile string) (*WebhookAuthorizer, error) {
-
-	for _, groupVersion := range requireEnabled {
-		if !registered.IsEnabledVersion(groupVersion) {
-			return nil, fmt.Errorf("webhook authz plugin requires enabling extension resource: %s", groupVersion)
-		}
-	}
-
-	loadingRules := clientcmd.NewDefaultClientConfigLoadingRules()
-	loadingRules.ExplicitPath = kubeConfigFile
-	loader := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(loadingRules, &clientcmd.ConfigOverrides{})
-
-	clientConfig, err := loader.ClientConfig()
+func New(kubeConfigFile string, authorizedTTL, unauthorizedTTL time.Duration) (*WebhookAuthorizer, error) {
+	subjectAccessReview, err := subjectAccessReviewInterfaceFromKubeconfig(kubeConfigFile)
 	if err != nil {
 		return nil, err
 	}
-	serializer := json.NewSerializer(json.DefaultMetaFactory, api.Scheme, runtime.ObjectTyperToTyper(api.Scheme), false)
-	clientConfig.ContentConfig.Codec = versioning.NewCodecForScheme(api.Scheme, serializer, encodeVersions, decodeVersions)
+	return newWithBackoff(subjectAccessReview, authorizedTTL, unauthorizedTTL, retryBackoff)
+}
 
-	restClient, err := restclient.UnversionedRESTClientFor(clientConfig)
-	if err != nil {
-		return nil, err
-	}
-
-	// TODO(ericchiang): Can we ensure remote service is reachable?
-
-	return &WebhookAuthorizer{restClient}, nil
+// newWithBackoff allows tests to skip the sleep.
+func newWithBackoff(subjectAccessReview authorizationclient.SubjectAccessReviewInterface, authorizedTTL, unauthorizedTTL, initialBackoff time.Duration) (*WebhookAuthorizer, error) {
+	return &WebhookAuthorizer{
+		subjectAccessReview: subjectAccessReview,
+		responseCache:       cache.NewLRUExpireCache(1024),
+		authorizedTTL:       authorizedTTL,
+		unauthorizedTTL:     unauthorizedTTL,
+		initialBackoff:      initialBackoff,
+	}, nil
 }
 
 // Authorize makes a REST request to the remote service describing the attempted action as a JSON
@@ -142,39 +140,91 @@ func New(kubeConfigFile string) (*WebhookAuthorizer, error) {
 //       }
 //     }
 //
-func (w *WebhookAuthorizer) Authorize(attr authorizer.Attributes) (err error) {
-	r := &v1beta1.SubjectAccessReview{
-		Spec: v1beta1.SubjectAccessReviewSpec{
-			User:   attr.GetUserName(),
-			Groups: attr.GetGroups(),
-		},
+func (w *WebhookAuthorizer) Authorize(attr authorizer.Attributes) (authorized bool, reason string, err error) {
+	r := &authorization.SubjectAccessReview{}
+	if user := attr.GetUser(); user != nil {
+		r.Spec = authorization.SubjectAccessReviewSpec{
+			User:   user.GetName(),
+			Groups: user.GetGroups(),
+			Extra:  convertToSARExtra(user.GetExtra()),
+		}
 	}
+
 	if attr.IsResourceRequest() {
-		r.Spec.ResourceAttributes = &v1beta1.ResourceAttributes{
-			Namespace: attr.GetNamespace(),
-			Verb:      attr.GetVerb(),
-			Group:     attr.GetAPIGroup(),
-			Resource:  attr.GetResource(),
+		r.Spec.ResourceAttributes = &authorization.ResourceAttributes{
+			Namespace:   attr.GetNamespace(),
+			Verb:        attr.GetVerb(),
+			Group:       attr.GetAPIGroup(),
+			Version:     attr.GetAPIVersion(),
+			Resource:    attr.GetResource(),
+			Subresource: attr.GetSubresource(),
+			Name:        attr.GetName(),
 		}
 	} else {
-		r.Spec.NonResourceAttributes = &v1beta1.NonResourceAttributes{
+		r.Spec.NonResourceAttributes = &authorization.NonResourceAttributes{
 			Path: attr.GetPath(),
 			Verb: attr.GetVerb(),
 		}
 	}
-	result := w.restClient.Post().Body(r).Do()
-	if err := result.Error(); err != nil {
-		return err
+	key, err := json.Marshal(r.Spec)
+	if err != nil {
+		return false, "", err
 	}
+	if entry, ok := w.responseCache.Get(string(key)); ok {
+		r.Status = entry.(authorization.SubjectAccessReviewStatus)
+	} else {
+		var (
+			result *authorization.SubjectAccessReview
+			err    error
+		)
+		webhook.WithExponentialBackoff(w.initialBackoff, func() error {
+			result, err = w.subjectAccessReview.Create(r)
+			return err
+		})
+		if err != nil {
+			// An error here indicates bad configuration or an outage. Log for debugging.
+			glog.Errorf("Failed to make webhook authorizer request: %v", err)
+			return false, "", err
+		}
+		r.Status = result.Status
+		if r.Status.Allowed {
+			w.responseCache.Add(string(key), r.Status, w.authorizedTTL)
+		} else {
+			w.responseCache.Add(string(key), r.Status, w.unauthorizedTTL)
+		}
+	}
+	return r.Status.Allowed, r.Status.Reason, nil
+}
 
-	if err := result.Into(r); err != nil {
-		return err
-	}
-	if r.Status.Allowed {
+func convertToSARExtra(extra map[string][]string) map[string]authorization.ExtraValue {
+	if extra == nil {
 		return nil
 	}
-	if r.Status.Reason != "" {
-		return errors.New(r.Status.Reason)
+	ret := map[string]authorization.ExtraValue{}
+	for k, v := range extra {
+		ret[k] = authorization.ExtraValue(v)
 	}
-	return errors.New("unauthorized")
+
+	return ret
+}
+
+// subjectAccessReviewInterfaceFromKubeconfig builds a client from the specified kubeconfig file,
+// and returns a SubjectAccessReviewInterface that uses that client. Note that the client submits SubjectAccessReview
+// requests to the exact path specified in the kubeconfig file, so arbitrary non-API servers can be targeted.
+func subjectAccessReviewInterfaceFromKubeconfig(kubeConfigFile string) (authorizationclient.SubjectAccessReviewInterface, error) {
+	gw, err := webhook.NewGenericWebhook(kubeConfigFile, groupVersions, 0)
+	if err != nil {
+		return nil, err
+	}
+	return &subjectAccessReviewClient{gw}, nil
+}
+
+type subjectAccessReviewClient struct {
+	w *webhook.GenericWebhook
+}
+
+func (t *subjectAccessReviewClient) Create(subjectAccessReview *authorization.SubjectAccessReview) (*authorization.SubjectAccessReview, error) {
+	result := &authorization.SubjectAccessReview{}
+	err := t.w.RestClient.Post().Body(subjectAccessReview).Do().Into(result)
+	return result, err
 }

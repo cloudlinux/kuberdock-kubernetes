@@ -1,5 +1,5 @@
 /*
-Copyright 2016 The Kubernetes Authors All rights reserved.
+Copyright 2016 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -21,7 +21,7 @@ import (
 	"sync"
 
 	"github.com/golang/groupcache/lru"
-	"k8s.io/kubernetes/pkg/api/meta"
+	"k8s.io/apimachinery/pkg/api/meta"
 	hashutil "k8s.io/kubernetes/pkg/util/hash"
 )
 
@@ -72,6 +72,8 @@ func (c *MatchingCache) Add(labelObj objectWithMeta, selectorObj objectWithMeta)
 // we need check in the external request to ensure the cache data is not dirty.
 func (c *MatchingCache) GetMatchingObject(labelObj objectWithMeta) (controller interface{}, exists bool) {
 	key := keyFunc(labelObj)
+	// NOTE: we use Lock() instead of RLock() here because lru's Get() method also modifies state(
+	// it need update the least recently usage information). So we can not call it concurrently.
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
 	return c.cache.Get(key)

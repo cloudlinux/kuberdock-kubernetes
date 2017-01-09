@@ -1,5 +1,5 @@
 /*
-Copyright 2016 The Kubernetes Authors All rights reserved.
+Copyright 2016 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -17,12 +17,33 @@ limitations under the License.
 package generic
 
 import (
-	pkgstorage "k8s.io/kubernetes/pkg/storage"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/kubernetes/pkg/storage"
+	"k8s.io/kubernetes/pkg/storage/storagebackend"
 )
 
 // RESTOptions is set of configuration options to generic registries.
 type RESTOptions struct {
-	Storage                 pkgstorage.Interface
-	Decorator               StorageDecorator
+	StorageConfig *storagebackend.Config
+	Decorator     StorageDecorator
+
+	EnableGarbageCollection bool
 	DeleteCollectionWorkers int
+	ResourcePrefix          string
+}
+
+// Implement RESTOptionsGetter so that RESTOptions can directly be used when available (i.e. tests)
+func (opts RESTOptions) GetRESTOptions(schema.GroupResource) (RESTOptions, error) {
+	return opts, nil
+}
+
+type RESTOptionsGetter interface {
+	GetRESTOptions(resource schema.GroupResource) (RESTOptions, error)
+}
+
+// StoreOptions is set of configuration options used to complete generic registries.
+type StoreOptions struct {
+	RESTOptions RESTOptionsGetter
+	TriggerFunc storage.TriggerPublisherFunc
+	AttrFunc    storage.AttrFunc
 }

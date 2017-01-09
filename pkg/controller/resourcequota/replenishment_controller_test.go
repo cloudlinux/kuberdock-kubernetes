@@ -1,5 +1,5 @@
 /*
-Copyright 2016 The Kubernetes Authors All rights reserved.
+Copyright 2016 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -19,20 +19,22 @@ package resourcequota
 import (
 	"testing"
 
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/kubernetes/pkg/api"
-	"k8s.io/kubernetes/pkg/api/unversioned"
+	"k8s.io/kubernetes/pkg/api/v1"
 	"k8s.io/kubernetes/pkg/controller"
-	"k8s.io/kubernetes/pkg/runtime"
+	"k8s.io/kubernetes/pkg/util/intstr"
 )
 
 // testReplenishment lets us test replenishment functions are invoked
 type testReplenishment struct {
-	groupKind unversioned.GroupKind
+	groupKind schema.GroupKind
 	namespace string
 }
 
 // mock function that holds onto the last kind that was replenished
-func (t *testReplenishment) Replenish(groupKind unversioned.GroupKind, namespace string, object runtime.Object) {
+func (t *testReplenishment) Replenish(groupKind schema.GroupKind, namespace string, object runtime.Object) {
 	t.groupKind = groupKind
 	t.namespace = namespace
 }
@@ -44,13 +46,13 @@ func TestPodReplenishmentUpdateFunc(t *testing.T) {
 		ReplenishmentFunc: mockReplenish.Replenish,
 		ResyncPeriod:      controller.NoResyncPeriodFunc,
 	}
-	oldPod := &api.Pod{
-		ObjectMeta: api.ObjectMeta{Namespace: "test", Name: "pod"},
-		Status:     api.PodStatus{Phase: api.PodRunning},
+	oldPod := &v1.Pod{
+		ObjectMeta: v1.ObjectMeta{Namespace: "test", Name: "pod"},
+		Status:     v1.PodStatus{Phase: v1.PodRunning},
 	}
-	newPod := &api.Pod{
-		ObjectMeta: api.ObjectMeta{Namespace: "test", Name: "pod"},
-		Status:     api.PodStatus{Phase: api.PodFailed},
+	newPod := &v1.Pod{
+		ObjectMeta: v1.ObjectMeta{Namespace: "test", Name: "pod"},
+		Status:     v1.PodStatus{Phase: v1.PodFailed},
 	}
 	updateFunc := PodReplenishmentUpdateFunc(&options)
 	updateFunc(oldPod, newPod)
@@ -69,9 +71,9 @@ func TestObjectReplenishmentDeleteFunc(t *testing.T) {
 		ReplenishmentFunc: mockReplenish.Replenish,
 		ResyncPeriod:      controller.NoResyncPeriodFunc,
 	}
-	oldPod := &api.Pod{
-		ObjectMeta: api.ObjectMeta{Namespace: "test", Name: "pod"},
-		Status:     api.PodStatus{Phase: api.PodRunning},
+	oldPod := &v1.Pod{
+		ObjectMeta: v1.ObjectMeta{Namespace: "test", Name: "pod"},
+		Status:     v1.PodStatus{Phase: v1.PodRunning},
 	}
 	deleteFunc := ObjectReplenishmentDeleteFunc(&options)
 	deleteFunc(oldPod)
@@ -79,6 +81,76 @@ func TestObjectReplenishmentDeleteFunc(t *testing.T) {
 		t.Errorf("Unexpected group kind %v", mockReplenish.groupKind)
 	}
 	if mockReplenish.namespace != oldPod.Namespace {
+		t.Errorf("Unexpected namespace %v", mockReplenish.namespace)
+	}
+}
+
+func TestServiceReplenishmentUpdateFunc(t *testing.T) {
+	mockReplenish := &testReplenishment{}
+	options := ReplenishmentControllerOptions{
+		GroupKind:         api.Kind("Service"),
+		ReplenishmentFunc: mockReplenish.Replenish,
+		ResyncPeriod:      controller.NoResyncPeriodFunc,
+	}
+	oldService := &v1.Service{
+		ObjectMeta: v1.ObjectMeta{Namespace: "test", Name: "mysvc"},
+		Spec: v1.ServiceSpec{
+			Type: v1.ServiceTypeNodePort,
+			Ports: []v1.ServicePort{{
+				Port:       80,
+				TargetPort: intstr.FromInt(80),
+			}},
+		},
+	}
+	newService := &v1.Service{
+		ObjectMeta: v1.ObjectMeta{Namespace: "test", Name: "mysvc"},
+		Spec: v1.ServiceSpec{
+			Type: v1.ServiceTypeClusterIP,
+			Ports: []v1.ServicePort{{
+				Port:       80,
+				TargetPort: intstr.FromInt(80),
+			}}},
+	}
+	updateFunc := ServiceReplenishmentUpdateFunc(&options)
+	updateFunc(oldService, newService)
+	if mockReplenish.groupKind != api.Kind("Service") {
+		t.Errorf("Unexpected group kind %v", mockReplenish.groupKind)
+	}
+	if mockReplenish.namespace != oldService.Namespace {
+		t.Errorf("Unexpected namespace %v", mockReplenish.namespace)
+	}
+
+	mockReplenish = &testReplenishment{}
+	options = ReplenishmentControllerOptions{
+		GroupKind:         api.Kind("Service"),
+		ReplenishmentFunc: mockReplenish.Replenish,
+		ResyncPeriod:      controller.NoResyncPeriodFunc,
+	}
+	oldService = &v1.Service{
+		ObjectMeta: v1.ObjectMeta{Namespace: "test", Name: "mysvc"},
+		Spec: v1.ServiceSpec{
+			Type: v1.ServiceTypeNodePort,
+			Ports: []v1.ServicePort{{
+				Port:       80,
+				TargetPort: intstr.FromInt(80),
+			}},
+		},
+	}
+	newService = &v1.Service{
+		ObjectMeta: v1.ObjectMeta{Namespace: "test", Name: "mysvc"},
+		Spec: v1.ServiceSpec{
+			Type: v1.ServiceTypeNodePort,
+			Ports: []v1.ServicePort{{
+				Port:       81,
+				TargetPort: intstr.FromInt(81),
+			}}},
+	}
+	updateFunc = ServiceReplenishmentUpdateFunc(&options)
+	updateFunc(oldService, newService)
+	if mockReplenish.groupKind == api.Kind("Service") {
+		t.Errorf("Unexpected group kind %v", mockReplenish.groupKind)
+	}
+	if mockReplenish.namespace == oldService.Namespace {
 		t.Errorf("Unexpected namespace %v", mockReplenish.namespace)
 	}
 }

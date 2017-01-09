@@ -1,5 +1,5 @@
 /*
-Copyright 2014 The Kubernetes Authors All rights reserved.
+Copyright 2014 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -17,23 +17,24 @@ limitations under the License.
 package admission
 
 import (
-	"k8s.io/kubernetes/pkg/api/unversioned"
-	"k8s.io/kubernetes/pkg/auth/user"
-	"k8s.io/kubernetes/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apiserver/pkg/authentication/user"
 )
 
 type attributesRecord struct {
-	kind        unversioned.GroupKind
+	kind        schema.GroupVersionKind
 	namespace   string
 	name        string
-	resource    unversioned.GroupResource
+	resource    schema.GroupVersionResource
 	subresource string
 	operation   Operation
 	object      runtime.Object
+	oldObject   runtime.Object
 	userInfo    user.Info
 }
 
-func NewAttributesRecord(object runtime.Object, kind unversioned.GroupKind, namespace, name string, resource unversioned.GroupResource, subresource string, operation Operation, userInfo user.Info) Attributes {
+func NewAttributesRecord(object runtime.Object, oldObject runtime.Object, kind schema.GroupVersionKind, namespace, name string, resource schema.GroupVersionResource, subresource string, operation Operation, userInfo user.Info) Attributes {
 	return &attributesRecord{
 		kind:        kind,
 		namespace:   namespace,
@@ -42,11 +43,12 @@ func NewAttributesRecord(object runtime.Object, kind unversioned.GroupKind, name
 		subresource: subresource,
 		operation:   operation,
 		object:      object,
+		oldObject:   oldObject,
 		userInfo:    userInfo,
 	}
 }
 
-func (record *attributesRecord) GetKind() unversioned.GroupKind {
+func (record *attributesRecord) GetKind() schema.GroupVersionKind {
 	return record.kind
 }
 
@@ -58,7 +60,7 @@ func (record *attributesRecord) GetName() string {
 	return record.name
 }
 
-func (record *attributesRecord) GetResource() unversioned.GroupResource {
+func (record *attributesRecord) GetResource() schema.GroupVersionResource {
 	return record.resource
 }
 
@@ -72,6 +74,10 @@ func (record *attributesRecord) GetOperation() Operation {
 
 func (record *attributesRecord) GetObject() runtime.Object {
 	return record.object
+}
+
+func (record *attributesRecord) GetOldObject() runtime.Object {
+	return record.oldObject
 }
 
 func (record *attributesRecord) GetUserInfo() user.Info {

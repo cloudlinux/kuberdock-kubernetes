@@ -1,5 +1,5 @@
 /*
-Copyright 2015 The Kubernetes Authors All rights reserved.
+Copyright 2015 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -17,13 +17,18 @@ limitations under the License.
 package e2e
 
 import (
+	"context"
 	"fmt"
 	"strconv"
 	"time"
 
-	"k8s.io/kubernetes/pkg/api"
-	client "k8s.io/kubernetes/pkg/client/unversioned"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/kubernetes/pkg/api/v1"
+	"k8s.io/kubernetes/pkg/client/clientset_generated/clientset"
+	"k8s.io/kubernetes/pkg/client/clientset_generated/internalclientset"
 	"k8s.io/kubernetes/pkg/util/intstr"
+	"k8s.io/kubernetes/test/e2e/framework"
+	testutils "k8s.io/kubernetes/test/utils"
 
 	. "github.com/onsi/ginkgo"
 )
@@ -39,7 +44,8 @@ const (
 	timeoutRC                       = 120 * time.Second
 	startServiceTimeout             = time.Minute
 	startServiceInterval            = 5 * time.Second
-	resourceConsumerImage           = "gcr.io/google_containers/resource_consumer:beta2"
+	resourceConsumerImage           = "gcr.io/google_containers/resource_consumer:beta4"
+	resourceConsumerControllerImage = "gcr.io/google_containers/resource_consumer/controller:beta4"
 	rcIsNil                         = "ERROR: replicationController = nil"
 	deploymentIsNil                 = "ERROR: deployment = nil"
 	rsIsNil                         = "ERROR: replicaset = nil"
@@ -57,8 +63,9 @@ rc.ConsumeCPU(300)
 */
 type ResourceConsumer struct {
 	name                     string
+	controllerName           string
 	kind                     string
-	framework                *Framework
+	framework                *framework.Framework
 	cpu                      chan int
 	mem                      chan int
 	customMetric             chan int
@@ -72,15 +79,15 @@ type ResourceConsumer struct {
 	requestSizeCustomMetric  int
 }
 
-func NewDynamicResourceConsumer(name, kind string, replicas, initCPUTotal, initMemoryTotal, initCustomMetric int, cpuLimit, memLimit int64, framework *Framework) *ResourceConsumer {
+func NewDynamicResourceConsumer(name, kind string, replicas, initCPUTotal, initMemoryTotal, initCustomMetric int, cpuLimit, memLimit int64, f *framework.Framework) *ResourceConsumer {
 	return newResourceConsumer(name, kind, replicas, initCPUTotal, initMemoryTotal, initCustomMetric, dynamicConsumptionTimeInSeconds,
-		dynamicRequestSizeInMillicores, dynamicRequestSizeInMegabytes, dynamicRequestSizeCustomMetric, cpuLimit, memLimit, framework)
+		dynamicRequestSizeInMillicores, dynamicRequestSizeInMegabytes, dynamicRequestSizeCustomMetric, cpuLimit, memLimit, f)
 }
 
 // TODO this still defaults to replication controller
-func NewStaticResourceConsumer(name string, replicas, initCPUTotal, initMemoryTotal, initCustomMetric int, cpuLimit, memLimit int64, framework *Framework) *ResourceConsumer {
+func NewStaticResourceConsumer(name string, replicas, initCPUTotal, initMemoryTotal, initCustomMetric int, cpuLimit, memLimit int64, f *framework.Framework) *ResourceConsumer {
 	return newResourceConsumer(name, kindRC, replicas, initCPUTotal, initMemoryTotal, initCustomMetric, staticConsumptionTimeInSeconds,
-		initCPUTotal/replicas, initMemoryTotal/replicas, initCustomMetric/replicas, cpuLimit, memLimit, framework)
+		initCPUTotal/replicas, initMemoryTotal/replicas, initCustomMetric/replicas, cpuLimit, memLimit, f)
 }
 
 /*
@@ -91,13 +98,14 @@ memLimit argument is in megabytes, memLimit is a maximum amount of memory that c
 cpuLimit argument is in millicores, cpuLimit is a maximum amount of cpu that can be consumed by a single pod
 */
 func newResourceConsumer(name, kind string, replicas, initCPUTotal, initMemoryTotal, initCustomMetric, consumptionTimeInSeconds, requestSizeInMillicores,
-	requestSizeInMegabytes int, requestSizeCustomMetric int, cpuLimit, memLimit int64, framework *Framework) *ResourceConsumer {
+	requestSizeInMegabytes int, requestSizeCustomMetric int, cpuLimit, memLimit int64, f *framework.Framework) *ResourceConsumer {
 
-	runServiceAndWorkloadForResourceConsumer(framework.Client, framework.Namespace.Name, name, kind, replicas, cpuLimit, memLimit)
+	runServiceAndWorkloadForResourceConsumer(f.ClientSet, f.InternalClientset, f.Namespace.Name, name, kind, replicas, cpuLimit, memLimit)
 	rc := &ResourceConsumer{
 		name:                     name,
+		controllerName:           name + "-ctrl",
 		kind:                     kind,
-		framework:                framework,
+		framework:                f,
 		cpu:                      make(chan int),
 		mem:                      make(chan int),
 		customMetric:             make(chan int),
@@ -110,8 +118,10 @@ func newResourceConsumer(name, kind string, replicas, initCPUTotal, initMemoryTo
 		requestSizeInMegabytes:   requestSizeInMegabytes,
 		requestSizeCustomMetric:  requestSizeCustomMetric,
 	}
+
 	go rc.makeConsumeCPURequests()
 	rc.ConsumeCPU(initCPUTotal)
+
 	go rc.makeConsumeMemRequests()
 	rc.ConsumeMem(initMemoryTotal)
 	go rc.makeConsumeCustomMetric()
@@ -121,43 +131,33 @@ func newResourceConsumer(name, kind string, replicas, initCPUTotal, initMemoryTo
 
 // ConsumeCPU consumes given number of CPU
 func (rc *ResourceConsumer) ConsumeCPU(millicores int) {
-	Logf("RC %s: consume %v millicores in total", rc.name, millicores)
+	framework.Logf("RC %s: consume %v millicores in total", rc.name, millicores)
 	rc.cpu <- millicores
 }
 
 // ConsumeMem consumes given number of Mem
 func (rc *ResourceConsumer) ConsumeMem(megabytes int) {
-	Logf("RC %s: consume %v MB in total", rc.name, megabytes)
+	framework.Logf("RC %s: consume %v MB in total", rc.name, megabytes)
 	rc.mem <- megabytes
 }
 
 // ConsumeMem consumes given number of custom metric
 func (rc *ResourceConsumer) ConsumeCustomMetric(amount int) {
-	Logf("RC %s: consume custom metric %v in total", rc.name, amount)
+	framework.Logf("RC %s: consume custom metric %v in total", rc.name, amount)
 	rc.customMetric <- amount
 }
 
 func (rc *ResourceConsumer) makeConsumeCPURequests() {
 	defer GinkgoRecover()
-	var count int
-	var rest int
 	sleepTime := time.Duration(0)
+	millicores := 0
 	for {
 		select {
-		case millicores := <-rc.cpu:
-			Logf("RC %s: consume %v millicores in total", rc.name, millicores)
-			if rc.requestSizeInMillicores != 0 {
-				count = millicores / rc.requestSizeInMillicores
-			}
-			rest = millicores - count*rc.requestSizeInMillicores
+		case millicores = <-rc.cpu:
+			framework.Logf("RC %s: setting consumption to %v millicores in total", rc.name, millicores)
 		case <-time.After(sleepTime):
-			Logf("RC %s: sending %v requests to consume %v millicores each and 1 request to consume %v millicores", rc.name, count, rc.requestSizeInMillicores, rest)
-			if count > 0 {
-				rc.sendConsumeCPURequests(count, rc.requestSizeInMillicores, rc.consumptionTimeInSeconds)
-			}
-			if rest > 0 {
-				go rc.sendOneConsumeCPURequest(rest, rc.consumptionTimeInSeconds)
-			}
+			framework.Logf("RC %s: sending request to consume %d millicores", rc.name, millicores)
+			rc.sendConsumeCPURequest(millicores)
 			sleepTime = rc.sleepTime
 		case <-rc.stopCPU:
 			return
@@ -167,25 +167,15 @@ func (rc *ResourceConsumer) makeConsumeCPURequests() {
 
 func (rc *ResourceConsumer) makeConsumeMemRequests() {
 	defer GinkgoRecover()
-	var count int
-	var rest int
 	sleepTime := time.Duration(0)
+	megabytes := 0
 	for {
 		select {
-		case megabytes := <-rc.mem:
-			Logf("RC %s: consume %v MB in total", rc.name, megabytes)
-			if rc.requestSizeInMegabytes != 0 {
-				count = megabytes / rc.requestSizeInMegabytes
-			}
-			rest = megabytes - count*rc.requestSizeInMegabytes
+		case megabytes = <-rc.mem:
+			framework.Logf("RC %s: setting consumption to %v MB in total", rc.name, megabytes)
 		case <-time.After(sleepTime):
-			Logf("RC %s: sending %v requests to consume %v MB each and 1 request to consume %v MB", rc.name, count, rc.requestSizeInMegabytes, rest)
-			if count > 0 {
-				rc.sendConsumeMemRequests(count, rc.requestSizeInMegabytes, rc.consumptionTimeInSeconds)
-			}
-			if rest > 0 {
-				go rc.sendOneConsumeMemRequest(rest, rc.consumptionTimeInSeconds)
-			}
+			framework.Logf("RC %s: sending request to consume %d MB", rc.name, megabytes)
+			rc.sendConsumeMemRequest(megabytes)
 			sleepTime = rc.sleepTime
 		case <-rc.stopMem:
 			return
@@ -195,26 +185,15 @@ func (rc *ResourceConsumer) makeConsumeMemRequests() {
 
 func (rc *ResourceConsumer) makeConsumeCustomMetric() {
 	defer GinkgoRecover()
-	var count int
-	var rest int
 	sleepTime := time.Duration(0)
+	delta := 0
 	for {
 		select {
-		case total := <-rc.customMetric:
-			Logf("RC %s: consume custom metric %v in total", rc.name, total)
-			if rc.requestSizeInMegabytes != 0 {
-				count = total / rc.requestSizeCustomMetric
-			}
-			rest = total - count*rc.requestSizeCustomMetric
+		case delta := <-rc.customMetric:
+			framework.Logf("RC %s: setting bump of metric %s to %d in total", rc.name, customMetricName, delta)
 		case <-time.After(sleepTime):
-			Logf("RC %s: sending %v requests to consume %v custom metric each and 1 request to consume %v",
-				rc.name, count, rc.requestSizeCustomMetric, rest)
-			if count > 0 {
-				rc.sendConsumeCustomMetric(count, rc.requestSizeCustomMetric, rc.consumptionTimeInSeconds)
-			}
-			if rest > 0 {
-				go rc.sendOneConsumeCustomMetric(rest, rc.consumptionTimeInSeconds)
-			}
+			framework.Logf("RC %s: sending request to consume %d of custom metric %s", rc.name, delta, customMetricName)
+			rc.sendConsumeCustomMetric(delta)
 			sleepTime = rc.sleepTime
 		case <-rc.stopCustomMetric:
 			return
@@ -222,139 +201,140 @@ func (rc *ResourceConsumer) makeConsumeCustomMetric() {
 	}
 }
 
-func (rc *ResourceConsumer) sendConsumeCPURequests(requests, millicores, durationSec int) {
-	for i := 0; i < requests; i++ {
-		go rc.sendOneConsumeCPURequest(millicores, durationSec)
-	}
-}
+func (rc *ResourceConsumer) sendConsumeCPURequest(millicores int) {
+	proxyRequest, err := framework.GetServicesProxyRequest(rc.framework.ClientSet, rc.framework.ClientSet.Core().RESTClient().Post())
+	framework.ExpectNoError(err)
 
-func (rc *ResourceConsumer) sendConsumeMemRequests(requests, megabytes, durationSec int) {
-	for i := 0; i < requests; i++ {
-		go rc.sendOneConsumeMemRequest(megabytes, durationSec)
-	}
-}
+	ctx, cancel := context.WithTimeout(context.Background(), framework.SingleCallTimeout)
+	defer cancel()
 
-func (rc *ResourceConsumer) sendConsumeCustomMetric(requests, delta, durationSec int) {
-	for i := 0; i < requests; i++ {
-		go rc.sendOneConsumeCustomMetric(delta, durationSec)
-	}
-}
-
-// sendOneConsumeCPURequest sends POST request for cpu consumption
-func (rc *ResourceConsumer) sendOneConsumeCPURequest(millicores int, durationSec int) {
-	defer GinkgoRecover()
-	proxyRequest, err := getServicesProxyRequest(rc.framework.Client, rc.framework.Client.Post())
-	expectNoError(err)
-	_, err = proxyRequest.Namespace(rc.framework.Namespace.Name).
-		Name(rc.name).
+	req := proxyRequest.Namespace(rc.framework.Namespace.Name).
+		Context(ctx).
+		Name(rc.controllerName).
 		Suffix("ConsumeCPU").
 		Param("millicores", strconv.Itoa(millicores)).
-		Param("durationSec", strconv.Itoa(durationSec)).
-		DoRaw()
-	expectNoError(err)
+		Param("durationSec", strconv.Itoa(rc.consumptionTimeInSeconds)).
+		Param("requestSizeMillicores", strconv.Itoa(rc.requestSizeInMillicores))
+	framework.Logf("URL: %v", *req.URL())
+	_, err = req.DoRaw()
+	framework.ExpectNoError(err)
 }
 
-// sendOneConsumeMemRequest sends POST request for memory consumption
-func (rc *ResourceConsumer) sendOneConsumeMemRequest(megabytes int, durationSec int) {
-	defer GinkgoRecover()
-	proxyRequest, err := getServicesProxyRequest(rc.framework.Client, rc.framework.Client.Post())
-	expectNoError(err)
-	_, err = proxyRequest.Namespace(rc.framework.Namespace.Name).
-		Name(rc.name).
+// sendConsumeMemRequest sends POST request for memory consumption
+func (rc *ResourceConsumer) sendConsumeMemRequest(megabytes int) {
+	proxyRequest, err := framework.GetServicesProxyRequest(rc.framework.ClientSet, rc.framework.ClientSet.Core().RESTClient().Post())
+	framework.ExpectNoError(err)
+
+	ctx, cancel := context.WithTimeout(context.Background(), framework.SingleCallTimeout)
+	defer cancel()
+
+	req := proxyRequest.Namespace(rc.framework.Namespace.Name).
+		Context(ctx).
+		Name(rc.controllerName).
 		Suffix("ConsumeMem").
 		Param("megabytes", strconv.Itoa(megabytes)).
-		Param("durationSec", strconv.Itoa(durationSec)).
-		DoRaw()
-	expectNoError(err)
+		Param("durationSec", strconv.Itoa(rc.consumptionTimeInSeconds)).
+		Param("requestSizeMegabytes", strconv.Itoa(rc.requestSizeInMegabytes))
+	framework.Logf("URL: %v", *req.URL())
+	_, err = req.DoRaw()
+	framework.ExpectNoError(err)
 }
 
-// sendOneConsumeCustomMetric sends POST request for custom metric consumption
-func (rc *ResourceConsumer) sendOneConsumeCustomMetric(delta int, durationSec int) {
-	defer GinkgoRecover()
-	proxyRequest, err := getServicesProxyRequest(rc.framework.Client, rc.framework.Client.Post())
-	expectNoError(err)
-	_, err = proxyRequest.Namespace(rc.framework.Namespace.Name).
-		Name(rc.name).
+// sendConsumeCustomMetric sends POST request for custom metric consumption
+func (rc *ResourceConsumer) sendConsumeCustomMetric(delta int) {
+	proxyRequest, err := framework.GetServicesProxyRequest(rc.framework.ClientSet, rc.framework.ClientSet.Core().RESTClient().Post())
+	framework.ExpectNoError(err)
+
+	ctx, cancel := context.WithTimeout(context.Background(), framework.SingleCallTimeout)
+	defer cancel()
+
+	req := proxyRequest.Namespace(rc.framework.Namespace.Name).
+		Context(ctx).
+		Name(rc.controllerName).
 		Suffix("BumpMetric").
 		Param("metric", customMetricName).
 		Param("delta", strconv.Itoa(delta)).
-		Param("durationSec", strconv.Itoa(durationSec)).
-		DoRaw()
-	expectNoError(err)
+		Param("durationSec", strconv.Itoa(rc.consumptionTimeInSeconds)).
+		Param("requestSizeMetrics", strconv.Itoa(rc.requestSizeCustomMetric))
+	framework.Logf("URL: %v", *req.URL())
+	_, err = req.DoRaw()
+	framework.ExpectNoError(err)
 }
 
 func (rc *ResourceConsumer) GetReplicas() int {
 	switch rc.kind {
 	case kindRC:
-		replicationController, err := rc.framework.Client.ReplicationControllers(rc.framework.Namespace.Name).Get(rc.name)
-		expectNoError(err)
+		replicationController, err := rc.framework.ClientSet.Core().ReplicationControllers(rc.framework.Namespace.Name).Get(rc.name, metav1.GetOptions{})
+		framework.ExpectNoError(err)
 		if replicationController == nil {
-			Failf(rcIsNil)
+			framework.Failf(rcIsNil)
 		}
-		return replicationController.Status.Replicas
+		return int(replicationController.Status.Replicas)
 	case kindDeployment:
-		deployment, err := rc.framework.Client.Deployments(rc.framework.Namespace.Name).Get(rc.name)
-		expectNoError(err)
+		deployment, err := rc.framework.ClientSet.Extensions().Deployments(rc.framework.Namespace.Name).Get(rc.name, metav1.GetOptions{})
+		framework.ExpectNoError(err)
 		if deployment == nil {
-			Failf(deploymentIsNil)
+			framework.Failf(deploymentIsNil)
 		}
-		return deployment.Status.Replicas
+		return int(deployment.Status.Replicas)
 	case kindReplicaSet:
-		rs, err := rc.framework.Client.ReplicaSets(rc.framework.Namespace.Name).Get(rc.name)
-		expectNoError(err)
+		rs, err := rc.framework.ClientSet.Extensions().ReplicaSets(rc.framework.Namespace.Name).Get(rc.name, metav1.GetOptions{})
+		framework.ExpectNoError(err)
 		if rs == nil {
-			Failf(rsIsNil)
+			framework.Failf(rsIsNil)
 		}
-		return rs.Status.Replicas
+		return int(rs.Status.Replicas)
 	default:
-		Failf(invalidKind)
+		framework.Failf(invalidKind)
 	}
 	return 0
 }
 
 func (rc *ResourceConsumer) WaitForReplicas(desiredReplicas int) {
-	timeout := 10 * time.Minute
+	timeout := 15 * time.Minute
 	for start := time.Now(); time.Since(start) < timeout; time.Sleep(20 * time.Second) {
 		if desiredReplicas == rc.GetReplicas() {
-			Logf("%s: current replicas number is equal to desired replicas number: %d", rc.kind, desiredReplicas)
+			framework.Logf("%s: current replicas number is equal to desired replicas number: %d", rc.kind, desiredReplicas)
 			return
 		} else {
-			Logf("%s: current replicas number %d waiting to be %d", rc.kind, rc.GetReplicas(), desiredReplicas)
+			framework.Logf("%s: current replicas number %d waiting to be %d", rc.kind, rc.GetReplicas(), desiredReplicas)
 		}
 	}
-	Failf("timeout waiting %v for pods size to be %d", timeout, desiredReplicas)
+	framework.Failf("timeout waiting %v for pods size to be %d", timeout, desiredReplicas)
 }
 
 func (rc *ResourceConsumer) EnsureDesiredReplicas(desiredReplicas int, timeout time.Duration) {
 	for start := time.Now(); time.Since(start) < timeout; time.Sleep(10 * time.Second) {
 		actual := rc.GetReplicas()
 		if desiredReplicas != actual {
-			Failf("Number of replicas has changed: expected %v, got %v", desiredReplicas, actual)
+			framework.Failf("Number of replicas has changed: expected %v, got %v", desiredReplicas, actual)
 		}
-		Logf("Number of replicas is as expected")
+		framework.Logf("Number of replicas is as expected")
 	}
-	Logf("Number of replicas was stable over %v", timeout)
+	framework.Logf("Number of replicas was stable over %v", timeout)
 }
 
 func (rc *ResourceConsumer) CleanUp() {
 	By(fmt.Sprintf("Removing consuming RC %s", rc.name))
-	rc.stopCPU <- 0
-	rc.stopMem <- 0
-	rc.stopCustomMetric <- 0
+	close(rc.stopCPU)
+	close(rc.stopMem)
+	close(rc.stopCustomMetric)
 	// Wait some time to ensure all child goroutines are finished.
 	time.Sleep(10 * time.Second)
-	expectNoError(DeleteRC(rc.framework.Client, rc.framework.Namespace.Name, rc.name))
-	expectNoError(rc.framework.Client.Services(rc.framework.Namespace.Name).Delete(rc.name))
+	framework.ExpectNoError(framework.DeleteRCAndPods(rc.framework.ClientSet, rc.framework.InternalClientset, rc.framework.Namespace.Name, rc.name))
+	framework.ExpectNoError(rc.framework.ClientSet.Core().Services(rc.framework.Namespace.Name).Delete(rc.name, nil))
+	framework.ExpectNoError(framework.DeleteRCAndPods(rc.framework.ClientSet, rc.framework.InternalClientset, rc.framework.Namespace.Name, rc.controllerName))
+	framework.ExpectNoError(rc.framework.ClientSet.Core().Services(rc.framework.Namespace.Name).Delete(rc.controllerName, nil))
 }
 
-func runServiceAndWorkloadForResourceConsumer(c *client.Client, ns, name, kind string, replicas int, cpuLimitMillis, memLimitMb int64) {
+func runServiceAndWorkloadForResourceConsumer(c clientset.Interface, internalClient internalclientset.Interface, ns, name, kind string, replicas int, cpuLimitMillis, memLimitMb int64) {
 	By(fmt.Sprintf("Running consuming RC %s via %s with %v replicas", name, kind, replicas))
-	_, err := c.Services(ns).Create(&api.Service{
-		ObjectMeta: api.ObjectMeta{
+	_, err := c.Core().Services(ns).Create(&v1.Service{
+		ObjectMeta: v1.ObjectMeta{
 			Name: name,
 		},
-		Spec: api.ServiceSpec{
-			Ports: []api.ServicePort{{
+		Spec: v1.ServiceSpec{
+			Ports: []v1.ServicePort{{
 				Port:       port,
 				TargetPort: intstr.FromInt(targetPort),
 			}},
@@ -364,42 +344,76 @@ func runServiceAndWorkloadForResourceConsumer(c *client.Client, ns, name, kind s
 			},
 		},
 	})
-	expectNoError(err)
+	framework.ExpectNoError(err)
 
-	rcConfig := RCConfig{
-		Client:     c,
-		Image:      resourceConsumerImage,
-		Name:       name,
-		Namespace:  ns,
-		Timeout:    timeoutRC,
-		Replicas:   replicas,
-		CpuRequest: cpuLimitMillis,
-		CpuLimit:   cpuLimitMillis,
-		MemRequest: memLimitMb * 1024 * 1024, // MemLimit is in bytes
-		MemLimit:   memLimitMb * 1024 * 1024,
+	rcConfig := testutils.RCConfig{
+		Client:         c,
+		InternalClient: internalClient,
+		Image:          resourceConsumerImage,
+		Name:           name,
+		Namespace:      ns,
+		Timeout:        timeoutRC,
+		Replicas:       replicas,
+		CpuRequest:     cpuLimitMillis,
+		CpuLimit:       cpuLimitMillis,
+		MemRequest:     memLimitMb * 1024 * 1024, // MemLimit is in bytes
+		MemLimit:       memLimitMb * 1024 * 1024,
 	}
 
 	switch kind {
 	case kindRC:
-		expectNoError(RunRC(rcConfig))
+		framework.ExpectNoError(framework.RunRC(rcConfig))
 		break
 	case kindDeployment:
-		dpConfig := DeploymentConfig{
-			rcConfig,
+		dpConfig := testutils.DeploymentConfig{
+			RCConfig: rcConfig,
 		}
-		expectNoError(RunDeployment(dpConfig))
+		framework.ExpectNoError(framework.RunDeployment(dpConfig))
 		break
 	case kindReplicaSet:
-		rsConfig := ReplicaSetConfig{
-			rcConfig,
+		rsConfig := testutils.ReplicaSetConfig{
+			RCConfig: rcConfig,
 		}
-		expectNoError(RunReplicaSet(rsConfig))
+		By(fmt.Sprintf("creating replicaset %s in namespace %s", rsConfig.Name, rsConfig.Namespace))
+		framework.ExpectNoError(framework.RunReplicaSet(rsConfig))
 		break
 	default:
-		Failf(invalidKind)
+		framework.Failf(invalidKind)
 	}
 
-	// Make sure endpoints are propagated.
-	// TODO(piosz): replace sleep with endpoints watch.
-	time.Sleep(10 * time.Second)
+	By(fmt.Sprintf("Running controller"))
+	controllerName := name + "-ctrl"
+	_, err = c.Core().Services(ns).Create(&v1.Service{
+		ObjectMeta: v1.ObjectMeta{
+			Name: controllerName,
+		},
+		Spec: v1.ServiceSpec{
+			Ports: []v1.ServicePort{{
+				Port:       port,
+				TargetPort: intstr.FromInt(targetPort),
+			}},
+
+			Selector: map[string]string{
+				"name": controllerName,
+			},
+		},
+	})
+	framework.ExpectNoError(err)
+
+	dnsClusterFirst := v1.DNSClusterFirst
+	controllerRcConfig := testutils.RCConfig{
+		Client:    c,
+		Image:     resourceConsumerControllerImage,
+		Name:      controllerName,
+		Namespace: ns,
+		Timeout:   timeoutRC,
+		Replicas:  1,
+		Command:   []string{"/controller", "--consumer-service-name=" + name, "--consumer-service-namespace=" + ns, "--consumer-port=80"},
+		DNSPolicy: &dnsClusterFirst,
+	}
+	framework.ExpectNoError(framework.RunRC(controllerRcConfig))
+
+	// Wait for endpoints to propagate for the controller service.
+	framework.ExpectNoError(framework.WaitForServiceEndpointsNum(
+		c, ns, controllerName, 1, startServiceInterval, startServiceTimeout))
 }

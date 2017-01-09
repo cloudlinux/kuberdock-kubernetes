@@ -1,5 +1,5 @@
 /*
-Copyright 2014 The Kubernetes Authors All rights reserved.
+Copyright 2014 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -19,12 +19,13 @@ package kubectl
 import (
 	"bytes"
 	"reflect"
+	"strings"
 	"testing"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/kubernetes/pkg/api"
-	"k8s.io/kubernetes/pkg/api/unversioned"
 	"k8s.io/kubernetes/pkg/api/v1"
-	"k8s.io/kubernetes/pkg/runtime"
 )
 
 func TestMassageJSONPath(t *testing.T) {
@@ -67,6 +68,7 @@ func TestNewColumnPrinterFromSpec(t *testing.T) {
 		expectedColumns []Column
 		expectErr       bool
 		name            string
+		noHeaders       bool
 	}{
 		{
 			spec:      "",
@@ -102,9 +104,14 @@ func TestNewColumnPrinterFromSpec(t *testing.T) {
 				},
 			},
 		},
+		{
+			spec:      "API_VERSION:apiVersion",
+			name:      "no-headers",
+			noHeaders: true,
+		},
 	}
 	for _, test := range tests {
-		printer, err := NewCustomColumnsPrinterFromSpec(test.spec, api.Codecs.UniversalDecoder())
+		printer, err := NewCustomColumnsPrinterFromSpec(test.spec, api.Codecs.UniversalDecoder(), test.noHeaders)
 		if test.expectErr {
 			if err == nil {
 				t.Errorf("[%s] unexpected non-error", test.name)
@@ -115,8 +122,19 @@ func TestNewColumnPrinterFromSpec(t *testing.T) {
 			t.Errorf("[%s] unexpected error: %v", test.name, err)
 			continue
 		}
+		if test.noHeaders {
+			buffer := &bytes.Buffer{}
 
-		if !reflect.DeepEqual(test.expectedColumns, printer.Columns) {
+			printer.PrintObj(&api.Pod{}, buffer)
+			if err != nil {
+				t.Fatalf("An error occurred printing Pod: %#v", err)
+			}
+
+			if contains(strings.Fields(buffer.String()), "API_VERSION") {
+				t.Errorf("unexpected header API_VERSION")
+			}
+
+		} else if !reflect.DeepEqual(test.expectedColumns, printer.Columns) {
 			t.Errorf("[%s]\nexpected:\n%v\nsaw:\n%v\n", test.name, test.expectedColumns, printer.Columns)
 		}
 
@@ -253,7 +271,7 @@ bar
 					FieldSpec: "{.apiVersion}",
 				},
 			},
-			obj: &v1.Pod{ObjectMeta: v1.ObjectMeta{Name: "foo"}, TypeMeta: unversioned.TypeMeta{APIVersion: "baz"}},
+			obj: &v1.Pod{ObjectMeta: v1.ObjectMeta{Name: "foo"}, TypeMeta: metav1.TypeMeta{APIVersion: "baz"}},
 			expectedOutput: `NAME      API_VERSION
 foo       baz
 `,

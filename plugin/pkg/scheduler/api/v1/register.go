@@ -1,5 +1,5 @@
 /*
-Copyright 2014 The Kubernetes Authors All rights reserved.
+Copyright 2014 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -17,18 +17,32 @@ limitations under the License.
 package v1
 
 import (
-	"k8s.io/kubernetes/pkg/api/unversioned"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/kubernetes/plugin/pkg/scheduler/api"
 )
 
 // SchemeGroupVersion is group version used to register these objects
 // TODO this should be in the "scheduler" group
-var SchemeGroupVersion = unversioned.GroupVersion{Group: "", Version: "v1"}
+var SchemeGroupVersion = schema.GroupVersion{Group: "", Version: "v1"}
 
 func init() {
-	api.Scheme.AddKnownTypes(SchemeGroupVersion,
-		&Policy{},
-	)
+	if err := addKnownTypes(api.Scheme); err != nil {
+		// Programmer error.
+		panic(err)
+	}
 }
 
-func (obj *Policy) GetObjectKind() unversioned.ObjectKind { return &obj.TypeMeta }
+var (
+	SchemeBuilder = runtime.NewSchemeBuilder(addKnownTypes)
+	AddToScheme   = SchemeBuilder.AddToScheme
+)
+
+func addKnownTypes(scheme *runtime.Scheme) error {
+	scheme.AddKnownTypes(SchemeGroupVersion,
+		&Policy{},
+	)
+	return nil
+}
+
+func (obj *Policy) GetObjectKind() schema.ObjectKind { return &obj.TypeMeta }

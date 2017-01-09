@@ -1,5 +1,5 @@
 /*
-Copyright 2014 The Kubernetes Authors All rights reserved.
+Copyright 2014 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -17,19 +17,18 @@ limitations under the License.
 package iptables
 
 import (
+	"bytes"
 	"fmt"
-	"io/ioutil"
-	"os"
 	"regexp"
 	"strings"
 	"sync"
 
-	"github.com/coreos/go-semver/semver"
 	godbus "github.com/godbus/dbus"
 	"github.com/golang/glog"
+	"k8s.io/apimachinery/pkg/util/sets"
 	utildbus "k8s.io/kubernetes/pkg/util/dbus"
 	utilexec "k8s.io/kubernetes/pkg/util/exec"
-	"k8s.io/kubernetes/pkg/util/sets"
+	utilversion "k8s.io/kubernetes/pkg/util/version"
 )
 
 type RulePosition string
@@ -41,7 +40,7 @@ const (
 
 // An injectable interface for running iptables commands.  Implementations must be goroutine-safe.
 type Interface interface {
-	// GetVersion returns the "X.Y.Z" semver string for iptables.
+	// GetVersion returns the "X.Y.Z" version string for iptables.
 	GetVersion() (string, error)
 	// EnsureChain checks if the specified chain exists and, if not, creates it.  If the chain existed, return true.
 	EnsureChain(table Table, chain Chain) (bool, error)
@@ -60,7 +59,7 @@ type Interface interface {
 	Save(table Table) ([]byte, error)
 	// SaveAll calls `iptables-save`.
 	SaveAll() ([]byte, error)
-	// Restore runs `iptables-restore` passing data through a temporary file.
+	// Restore runs `iptables-restore` passing data through []byte.
 	// table is the Table to restore
 	// data should be formatted like the output of Save()
 	// flush sets the presence of the "--noflush" flag. see: FlushFlag
@@ -98,9 +97,9 @@ const (
 )
 
 const (
-	cmdIptablesSave    string = "iptables-save"
-	cmdIptablesRestore string = "iptables-restore"
-	cmdIptables        string = "iptables"
+	cmdIPTablesSave    string = "iptables-save"
+	cmdIPTablesRestore string = "iptables-restore"
+	cmdIPTables        string = "iptables"
 	cmdIp6tables       string = "ip6tables"
 )
 
@@ -139,7 +138,7 @@ type runner struct {
 
 // New returns a new Interface which will exec iptables.
 func New(exec utilexec.Interface, dbus utildbus.Interface, protocol Protocol) Interface {
-	vstring, err := getIptablesVersionString(exec)
+	vstring, err := getIPTablesVersionString(exec)
 	if err != nil {
 		glog.Warningf("Error checking iptables version, assuming version at least %s: %v", MinCheckVersion, err)
 		vstring = MinCheckVersion
@@ -148,8 +147,8 @@ func New(exec utilexec.Interface, dbus utildbus.Interface, protocol Protocol) In
 		exec:     exec,
 		dbus:     dbus,
 		protocol: protocol,
-		hasCheck: getIptablesHasCheckCommand(vstring),
-		waitFlag: getIptablesWaitFlag(vstring),
+		hasCheck: getIPTablesHasCheckCommand(vstring),
+		waitFlag: getIPTablesWaitFlag(vstring),
 	}
 	runner.connectToFirewallD()
 	return runner
@@ -192,7 +191,7 @@ func (runner *runner) connectToFirewallD() {
 
 // GetVersion returns the version string.
 func (runner *runner) GetVersion() (string, error) {
-	return getIptablesVersionString(runner.exec)
+	return getIPTablesVersionString(runner.exec)
 }
 
 // EnsureChain is part of Interface.
@@ -297,7 +296,7 @@ func (runner *runner) Save(table Table) ([]byte, error) {
 	// run and return
 	args := []string{"-t", string(table)}
 	glog.V(4).Infof("running iptables-save %v", args)
-	return runner.exec.Command(cmdIptablesSave, args...).CombinedOutput()
+	return runner.exec.Command(cmdIPTablesSave, args...).CombinedOutput()
 }
 
 // SaveAll is part of Interface.
@@ -307,7 +306,7 @@ func (runner *runner) SaveAll() ([]byte, error) {
 
 	// run and return
 	glog.V(4).Infof("running iptables-save")
-	return runner.exec.Command(cmdIptablesSave, []string{}...).CombinedOutput()
+	return runner.exec.Command(cmdIPTablesSave, []string{}...).CombinedOutput()
 }
 
 // Restore is part of Interface.
@@ -335,29 +334,12 @@ func (runner *runner) restoreInternal(args []string, data []byte, flush FlushFla
 	if counters {
 		args = append(args, "--counters")
 	}
-	// create temp file through which to pass data
-	temp, err := ioutil.TempFile("", "kube-temp-iptables-restore-")
-	if err != nil {
-		return err
-	}
-	// make sure we delete the temp file
-	defer os.Remove(temp.Name())
-	// Put the filename at the end of args.
-	// NOTE: the filename must be at the end.
-	// See: https://git.netfilter.org/iptables/commit/iptables-restore.c?id=e6869a8f59d779ff4d5a0984c86d80db70784962
-	args = append(args, temp.Name())
-	if err != nil {
-		return err
-	}
-	// write data to the file
-	_, err = temp.Write(data)
-	temp.Close()
-	if err != nil {
-		return err
-	}
+
 	// run the command and return the output or an error including the output and error
 	glog.V(4).Infof("running iptables-restore %v", args)
-	b, err := runner.exec.Command(cmdIptablesRestore, args...).CombinedOutput()
+	cmd := runner.exec.Command(cmdIPTablesRestore, args...)
+	cmd.SetStdin(bytes.NewBuffer(data))
+	b, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("%v (%s)", err, b)
 	}
@@ -368,7 +350,7 @@ func (runner *runner) iptablesCommand() string {
 	if runner.IsIpv6() {
 		return cmdIp6tables
 	} else {
-		return cmdIptables
+		return cmdIPTables
 	}
 }
 
@@ -392,12 +374,18 @@ func (runner *runner) checkRule(table Table, chain Chain, args ...string) (bool,
 	}
 }
 
+var hexnumRE = regexp.MustCompile("0x0+([0-9])")
+
+func trimhex(s string) string {
+	return hexnumRE.ReplaceAllString(s, "0x$1")
+}
+
 // Executes the rule check without using the "-C" flag, instead parsing iptables-save.
 // Present for compatibility with <1.4.11 versions of iptables.  This is full
 // of hack and half-measures.  We should nix this ASAP.
 func (runner *runner) checkRuleWithoutCheck(table Table, chain Chain, args ...string) (bool, error) {
 	glog.V(1).Infof("running iptables-save -t %s", string(table))
-	out, err := runner.exec.Command(cmdIptablesSave, "-t", string(table)).CombinedOutput()
+	out, err := runner.exec.Command(cmdIPTablesSave, "-t", string(table)).CombinedOutput()
 	if err != nil {
 		return false, fmt.Errorf("error checking rule: %v", err)
 	}
@@ -410,6 +398,7 @@ func (runner *runner) checkRuleWithoutCheck(table Table, chain Chain, args ...st
 	var argsCopy []string
 	for i := range args {
 		tmpField := strings.Trim(args[i], "\"")
+		tmpField = trimhex(tmpField)
 		argsCopy = append(argsCopy, strings.Fields(tmpField)...)
 	}
 	argset := sets.NewString(argsCopy...)
@@ -427,6 +416,7 @@ func (runner *runner) checkRuleWithoutCheck(table Table, chain Chain, args ...st
 		// Just remove all quotes.
 		for i := range fields {
 			fields[i] = strings.Trim(fields[i], "\"")
+			fields[i] = trimhex(fields[i])
 		}
 
 		// TODO: This misses reorderings e.g. "-x foo ! -y bar" will match "! -x foo -y bar"
@@ -471,61 +461,58 @@ func makeFullArgs(table Table, chain Chain, args ...string) []string {
 }
 
 // Checks if iptables has the "-C" flag
-func getIptablesHasCheckCommand(vstring string) bool {
-	minVersion, err := semver.NewVersion(MinCheckVersion)
+func getIPTablesHasCheckCommand(vstring string) bool {
+	minVersion, err := utilversion.ParseGeneric(MinCheckVersion)
 	if err != nil {
 		glog.Errorf("MinCheckVersion (%s) is not a valid version string: %v", MinCheckVersion, err)
 		return true
 	}
-	version, err := semver.NewVersion(vstring)
+	version, err := utilversion.ParseGeneric(vstring)
 	if err != nil {
 		glog.Errorf("vstring (%s) is not a valid version string: %v", vstring, err)
 		return true
 	}
-	if version.LessThan(*minVersion) {
-		return false
-	}
-	return true
+	return version.AtLeast(minVersion)
 }
 
 // Checks if iptables version has a "wait" flag
-func getIptablesWaitFlag(vstring string) []string {
-	version, err := semver.NewVersion(vstring)
+func getIPTablesWaitFlag(vstring string) []string {
+	version, err := utilversion.ParseGeneric(vstring)
 	if err != nil {
 		glog.Errorf("vstring (%s) is not a valid version string: %v", vstring, err)
 		return nil
 	}
 
-	minVersion, err := semver.NewVersion(MinWaitVersion)
+	minVersion, err := utilversion.ParseGeneric(MinWaitVersion)
 	if err != nil {
 		glog.Errorf("MinWaitVersion (%s) is not a valid version string: %v", MinWaitVersion, err)
 		return nil
 	}
-	if version.LessThan(*minVersion) {
+	if version.LessThan(minVersion) {
 		return nil
 	}
 
-	minVersion, err = semver.NewVersion(MinWait2Version)
+	minVersion, err = utilversion.ParseGeneric(MinWait2Version)
 	if err != nil {
 		glog.Errorf("MinWait2Version (%s) is not a valid version string: %v", MinWait2Version, err)
 		return nil
 	}
-	if version.LessThan(*minVersion) {
+	if version.LessThan(minVersion) {
 		return []string{"-w"}
 	} else {
 		return []string{"-w2"}
 	}
 }
 
-// getIptablesVersionString runs "iptables --version" to get the version string
+// getIPTablesVersionString runs "iptables --version" to get the version string
 // in the form "X.X.X"
-func getIptablesVersionString(exec utilexec.Interface) (string, error) {
+func getIPTablesVersionString(exec utilexec.Interface) (string, error) {
 	// this doesn't access mutable state so we don't need to use the interface / runner
-	bytes, err := exec.Command(cmdIptables, "--version").CombinedOutput()
+	bytes, err := exec.Command(cmdIPTables, "--version").CombinedOutput()
 	if err != nil {
 		return "", err
 	}
-	versionMatcher := regexp.MustCompile("v([0-9]+\\.[0-9]+\\.[0-9]+)")
+	versionMatcher := regexp.MustCompile("v([0-9]+(\\.[0-9]+)+)")
 	match := versionMatcher.FindStringSubmatch(string(bytes))
 	if match == nil {
 		return "", fmt.Errorf("no iptables version found in string: %s", bytes)

@@ -1,5 +1,5 @@
 /*
-Copyright 2014 The Kubernetes Authors All rights reserved.
+Copyright 2014 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -19,9 +19,11 @@ package registrytest
 import (
 	"sync"
 
+	"k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/watch"
+	genericapirequest "k8s.io/apiserver/pkg/request"
 	"k8s.io/kubernetes/pkg/api"
-	"k8s.io/kubernetes/pkg/api/errors"
-	"k8s.io/kubernetes/pkg/watch"
 )
 
 // NodeRegistry implements node.Registry interface.
@@ -57,13 +59,13 @@ func (r *NodeRegistry) SetError(err error) {
 	r.Err = err
 }
 
-func (r *NodeRegistry) ListNodes(ctx api.Context, options *api.ListOptions) (*api.NodeList, error) {
+func (r *NodeRegistry) ListNodes(ctx genericapirequest.Context, options *api.ListOptions) (*api.NodeList, error) {
 	r.Lock()
 	defer r.Unlock()
 	return &r.Nodes, r.Err
 }
 
-func (r *NodeRegistry) CreateNode(ctx api.Context, node *api.Node) error {
+func (r *NodeRegistry) CreateNode(ctx genericapirequest.Context, node *api.Node) error {
 	r.Lock()
 	defer r.Unlock()
 	r.Node = node.Name
@@ -71,7 +73,7 @@ func (r *NodeRegistry) CreateNode(ctx api.Context, node *api.Node) error {
 	return r.Err
 }
 
-func (r *NodeRegistry) UpdateNode(ctx api.Context, node *api.Node) error {
+func (r *NodeRegistry) UpdateNode(ctx genericapirequest.Context, node *api.Node) error {
 	r.Lock()
 	defer r.Unlock()
 	for i, item := range r.Nodes.Items {
@@ -83,7 +85,7 @@ func (r *NodeRegistry) UpdateNode(ctx api.Context, node *api.Node) error {
 	return r.Err
 }
 
-func (r *NodeRegistry) GetNode(ctx api.Context, nodeID string) (*api.Node, error) {
+func (r *NodeRegistry) GetNode(ctx genericapirequest.Context, nodeID string, options *metav1.GetOptions) (*api.Node, error) {
 	r.Lock()
 	defer r.Unlock()
 	if r.Err != nil {
@@ -97,7 +99,7 @@ func (r *NodeRegistry) GetNode(ctx api.Context, nodeID string) (*api.Node, error
 	return nil, errors.NewNotFound(api.Resource("nodes"), nodeID)
 }
 
-func (r *NodeRegistry) DeleteNode(ctx api.Context, nodeID string) error {
+func (r *NodeRegistry) DeleteNode(ctx genericapirequest.Context, nodeID string) error {
 	r.Lock()
 	defer r.Unlock()
 	var newList []api.Node
@@ -110,6 +112,6 @@ func (r *NodeRegistry) DeleteNode(ctx api.Context, nodeID string) error {
 	return r.Err
 }
 
-func (r *NodeRegistry) WatchNodes(ctx api.Context, options *api.ListOptions) (watch.Interface, error) {
+func (r *NodeRegistry) WatchNodes(ctx genericapirequest.Context, options *api.ListOptions) (watch.Interface, error) {
 	return nil, r.Err
 }

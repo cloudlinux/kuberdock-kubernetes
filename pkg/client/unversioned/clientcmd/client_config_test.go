@@ -1,5 +1,5 @@
 /*
-Copyright 2014 The Kubernetes Authors All rights reserved.
+Copyright 2014 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -17,7 +17,10 @@ limitations under the License.
 package clientcmd
 
 import (
+	"io/ioutil"
+	"os"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/imdario/mergo"
@@ -65,11 +68,36 @@ func createValidTestConfig() *clientcmdapi.Config {
 	return config
 }
 
+func createCAValidTestConfig() *clientcmdapi.Config {
+
+	config := createValidTestConfig()
+	config.Clusters["clean"].CertificateAuthorityData = []byte{0, 0}
+	return config
+}
+
+func TestInsecureOverridesCA(t *testing.T) {
+	config := createCAValidTestConfig()
+	clientBuilder := NewNonInteractiveClientConfig(*config, "clean", &ConfigOverrides{
+		ClusterInfo: clientcmdapi.Cluster{
+			InsecureSkipTLSVerify: true,
+		},
+	}, nil)
+
+	actualCfg, err := clientBuilder.ClientConfig()
+	if err != nil {
+		t.Errorf("Unexpected error: %v", err)
+	}
+
+	matchBoolArg(true, actualCfg.Insecure, t)
+	matchStringArg("", actualCfg.TLSClientConfig.CAFile, t)
+	matchByteArg(nil, actualCfg.TLSClientConfig.CAData, t)
+}
+
 func TestMergeContext(t *testing.T) {
 	const namespace = "overriden-namespace"
 
 	config := createValidTestConfig()
-	clientBuilder := NewNonInteractiveClientConfig(*config, "clean", &ConfigOverrides{})
+	clientBuilder := NewNonInteractiveClientConfig(*config, "clean", &ConfigOverrides{}, nil)
 
 	_, overridden, err := clientBuilder.Namespace()
 	if err != nil {
@@ -84,7 +112,7 @@ func TestMergeContext(t *testing.T) {
 		Context: clientcmdapi.Context{
 			Namespace: namespace,
 		},
-	})
+	}, nil)
 
 	actual, overridden, err := clientBuilder.Namespace()
 	if err != nil {
@@ -118,7 +146,7 @@ func TestCertificateData(t *testing.T) {
 	}
 	config.CurrentContext = "clean"
 
-	clientBuilder := NewNonInteractiveClientConfig(*config, "clean", &ConfigOverrides{})
+	clientBuilder := NewNonInteractiveClientConfig(*config, "clean", &ConfigOverrides{}, nil)
 
 	clientConfig, err := clientBuilder.ClientConfig()
 	if err != nil {
@@ -149,7 +177,7 @@ func TestBasicAuthData(t *testing.T) {
 	}
 	config.CurrentContext = "clean"
 
-	clientBuilder := NewNonInteractiveClientConfig(*config, "clean", &ConfigOverrides{})
+	clientBuilder := NewNonInteractiveClientConfig(*config, "clean", &ConfigOverrides{}, nil)
 
 	clientConfig, err := clientBuilder.ClientConfig()
 	if err != nil {
@@ -161,9 +189,83 @@ func TestBasicAuthData(t *testing.T) {
 	matchStringArg(password, clientConfig.Password, t)
 }
 
+func TestBasicTokenFile(t *testing.T) {
+	token := "exampletoken"
+	f, err := ioutil.TempFile("", "tokenfile")
+	if err != nil {
+		t.Errorf("Unexpected error: %v", err)
+		return
+	}
+	defer os.Remove(f.Name())
+	if err := ioutil.WriteFile(f.Name(), []byte(token), 0644); err != nil {
+		t.Errorf("Unexpected error: %v", err)
+		return
+	}
+
+	config := clientcmdapi.NewConfig()
+	config.Clusters["clean"] = &clientcmdapi.Cluster{
+		Server: "https://localhost:8443",
+	}
+	config.AuthInfos["clean"] = &clientcmdapi.AuthInfo{
+		TokenFile: f.Name(),
+	}
+	config.Contexts["clean"] = &clientcmdapi.Context{
+		Cluster:  "clean",
+		AuthInfo: "clean",
+	}
+	config.CurrentContext = "clean"
+
+	clientBuilder := NewNonInteractiveClientConfig(*config, "clean", &ConfigOverrides{}, nil)
+
+	clientConfig, err := clientBuilder.ClientConfig()
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	matchStringArg(token, clientConfig.BearerToken, t)
+}
+
+func TestPrecedenceTokenFile(t *testing.T) {
+	token := "exampletoken"
+	f, err := ioutil.TempFile("", "tokenfile")
+	if err != nil {
+		t.Errorf("Unexpected error: %v", err)
+		return
+	}
+	defer os.Remove(f.Name())
+	if err := ioutil.WriteFile(f.Name(), []byte(token), 0644); err != nil {
+		t.Errorf("Unexpected error: %v", err)
+		return
+	}
+
+	config := clientcmdapi.NewConfig()
+	config.Clusters["clean"] = &clientcmdapi.Cluster{
+		Server: "https://localhost:8443",
+	}
+	expectedToken := "expected"
+	config.AuthInfos["clean"] = &clientcmdapi.AuthInfo{
+		Token:     expectedToken,
+		TokenFile: f.Name(),
+	}
+	config.Contexts["clean"] = &clientcmdapi.Context{
+		Cluster:  "clean",
+		AuthInfo: "clean",
+	}
+	config.CurrentContext = "clean"
+
+	clientBuilder := NewNonInteractiveClientConfig(*config, "clean", &ConfigOverrides{}, nil)
+
+	clientConfig, err := clientBuilder.ClientConfig()
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	matchStringArg(expectedToken, clientConfig.BearerToken, t)
+}
+
 func TestCreateClean(t *testing.T) {
 	config := createValidTestConfig()
-	clientBuilder := NewNonInteractiveClientConfig(*config, "clean", &ConfigOverrides{})
+	clientBuilder := NewNonInteractiveClientConfig(*config, "clean", &ConfigOverrides{}, nil)
 
 	clientConfig, err := clientBuilder.ClientConfig()
 	if err != nil {
@@ -192,8 +294,6 @@ func TestCreateCleanWithPrefix(t *testing.T) {
 		{"anything", "anything"},
 	}
 
-	// WARNING: EnvVarCluster.Server is set during package loading time and can not be overriden by os.Setenv inside this test
-	EnvVarCluster.Server = ""
 	tt = append(tt, struct{ server, host string }{"", "http://localhost:8080"})
 
 	for _, tc := range tt {
@@ -203,11 +303,13 @@ func TestCreateCleanWithPrefix(t *testing.T) {
 		cleanConfig.Server = tc.server
 		config.Clusters["clean"] = cleanConfig
 
-		clientBuilder := NewNonInteractiveClientConfig(*config, "clean", &ConfigOverrides{})
+		clientBuilder := NewNonInteractiveClientConfig(*config, "clean", &ConfigOverrides{
+			ClusterDefaults: clientcmdapi.Cluster{Server: "http://localhost:8080"},
+		}, nil)
 
 		clientConfig, err := clientBuilder.ClientConfig()
 		if err != nil {
-			t.Errorf("Unexpected error: %v", err)
+			t.Fatalf("Unexpected error: %v", err)
 		}
 
 		matchStringArg(tc.host, clientConfig.Host, t)
@@ -220,7 +322,7 @@ func TestCreateCleanDefault(t *testing.T) {
 
 	clientConfig, err := clientBuilder.ClientConfig()
 	if err != nil {
-		t.Errorf("Unexpected error: %v", err)
+		t.Fatalf("Unexpected error: %v", err)
 	}
 
 	matchStringArg(config.Clusters["clean"].Server, clientConfig.Host, t)
@@ -228,22 +330,161 @@ func TestCreateCleanDefault(t *testing.T) {
 	matchStringArg(config.AuthInfos["clean"].Token, clientConfig.BearerToken, t)
 }
 
-func TestCreateMissingContext(t *testing.T) {
-	const expectedErrorContains = "Context was not found for specified context"
+func TestCreateCleanDefaultCluster(t *testing.T) {
 	config := createValidTestConfig()
-	clientBuilder := NewNonInteractiveClientConfig(*config, "not-present", &ConfigOverrides{})
+	clientBuilder := NewDefaultClientConfig(*config, &ConfigOverrides{
+		ClusterDefaults: clientcmdapi.Cluster{Server: "http://localhost:8080"},
+	})
 
 	clientConfig, err := clientBuilder.ClientConfig()
 	if err != nil {
-		t.Errorf("Unexpected error: %v", err)
+		t.Fatalf("Unexpected error: %v", err)
 	}
 
-	expectedConfig := &restclient.Config{Host: clientConfig.Host}
+	matchStringArg(config.Clusters["clean"].Server, clientConfig.Host, t)
+	matchBoolArg(config.Clusters["clean"].InsecureSkipTLSVerify, clientConfig.Insecure, t)
+	matchStringArg(config.AuthInfos["clean"].Token, clientConfig.BearerToken, t)
+}
 
-	if !reflect.DeepEqual(expectedConfig, clientConfig) {
-		t.Errorf("Expected %#v, got %#v", expectedConfig, clientConfig)
+func TestCreateMissingContextNoDefault(t *testing.T) {
+	const expectedErrorContains = "Context was not found for specified context"
+	config := createValidTestConfig()
+	clientBuilder := NewNonInteractiveClientConfig(*config, "not-present", &ConfigOverrides{}, nil)
+
+	_, err := clientBuilder.ClientConfig()
+	if err == nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+}
+
+func TestCreateMissingContext(t *testing.T) {
+	const expectedErrorContains = "context was not found for specified context: not-present"
+	config := createValidTestConfig()
+	clientBuilder := NewNonInteractiveClientConfig(*config, "not-present", &ConfigOverrides{
+		ClusterDefaults: clientcmdapi.Cluster{Server: "http://localhost:8080"},
+	}, nil)
+
+	_, err := clientBuilder.ClientConfig()
+	if err == nil {
+		t.Fatalf("Expected error: %v", expectedErrorContains)
+	}
+	if !strings.Contains(err.Error(), expectedErrorContains) {
+		t.Fatalf("Expected error: %v, but got %v", expectedErrorContains, err)
+	}
+}
+
+func TestInClusterClientConfigPrecedence(t *testing.T) {
+	tt := []struct {
+		overrides *ConfigOverrides
+	}{
+		{
+			overrides: &ConfigOverrides{
+				ClusterInfo: clientcmdapi.Cluster{
+					Server: "https://host-from-overrides.com",
+				},
+			},
+		},
+		{
+			overrides: &ConfigOverrides{
+				AuthInfo: clientcmdapi.AuthInfo{
+					Token: "https://host-from-overrides.com",
+				},
+			},
+		},
+		{
+			overrides: &ConfigOverrides{
+				ClusterInfo: clientcmdapi.Cluster{
+					CertificateAuthority: "/path/to/ca-from-overrides.crt",
+				},
+			},
+		},
+		{
+			overrides: &ConfigOverrides{
+				ClusterInfo: clientcmdapi.Cluster{
+					Server: "https://host-from-overrides.com",
+				},
+				AuthInfo: clientcmdapi.AuthInfo{
+					Token: "https://host-from-overrides.com",
+				},
+			},
+		},
+		{
+			overrides: &ConfigOverrides{
+				ClusterInfo: clientcmdapi.Cluster{
+					Server:               "https://host-from-overrides.com",
+					CertificateAuthority: "/path/to/ca-from-overrides.crt",
+				},
+			},
+		},
+		{
+			overrides: &ConfigOverrides{
+				ClusterInfo: clientcmdapi.Cluster{
+					CertificateAuthority: "/path/to/ca-from-overrides.crt",
+				},
+				AuthInfo: clientcmdapi.AuthInfo{
+					Token: "https://host-from-overrides.com",
+				},
+			},
+		},
+		{
+			overrides: &ConfigOverrides{
+				ClusterInfo: clientcmdapi.Cluster{
+					Server:               "https://host-from-overrides.com",
+					CertificateAuthority: "/path/to/ca-from-overrides.crt",
+				},
+				AuthInfo: clientcmdapi.AuthInfo{
+					Token: "https://host-from-overrides.com",
+				},
+			},
+		},
+		{
+			overrides: &ConfigOverrides{},
+		},
 	}
 
+	for _, tc := range tt {
+		expectedServer := "https://host-from-cluster.com"
+		expectedToken := "token-from-cluster"
+		expectedCAFile := "/path/to/ca-from-cluster.crt"
+
+		icc := &inClusterClientConfig{
+			inClusterConfigProvider: func() (*restclient.Config, error) {
+				return &restclient.Config{
+					Host:        expectedServer,
+					BearerToken: expectedToken,
+					TLSClientConfig: restclient.TLSClientConfig{
+						CAFile: expectedCAFile,
+					},
+				}, nil
+			},
+			overrides: tc.overrides,
+		}
+
+		clientConfig, err := icc.ClientConfig()
+		if err != nil {
+			t.Fatalf("Unxpected error: %v", err)
+		}
+
+		if overridenServer := tc.overrides.ClusterInfo.Server; len(overridenServer) > 0 {
+			expectedServer = overridenServer
+		}
+		if overridenToken := tc.overrides.AuthInfo.Token; len(overridenToken) > 0 {
+			expectedToken = overridenToken
+		}
+		if overridenCAFile := tc.overrides.ClusterInfo.CertificateAuthority; len(overridenCAFile) > 0 {
+			expectedCAFile = overridenCAFile
+		}
+
+		if clientConfig.Host != expectedServer {
+			t.Errorf("Expected server %v, got %v", expectedServer, clientConfig.Host)
+		}
+		if clientConfig.BearerToken != expectedToken {
+			t.Errorf("Expected token %v, got %v", expectedToken, clientConfig.BearerToken)
+		}
+		if clientConfig.TLSClientConfig.CAFile != expectedCAFile {
+			t.Errorf("Expected Certificate Authority %v, got %v", expectedCAFile, clientConfig.TLSClientConfig.CAFile)
+		}
+	}
 }
 
 func matchBoolArg(expected, got bool, t *testing.T) {

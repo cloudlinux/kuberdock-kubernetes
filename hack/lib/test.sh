@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Copyright 2015 The Kubernetes Authors All rights reserved.
+# Copyright 2015 The Kubernetes Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -23,16 +23,23 @@ readonly   red=$(tput setaf 1)
 readonly green=$(tput setaf 2)
 
 kube::test::clear_all() {
-  kubectl delete "${kube_flags[@]}" rc,pods --all --grace-period=0
+  if kube::test::if_supports_resource "rc" ; then
+    kubectl delete "${kube_flags[@]}" rc --all --grace-period=0 --force
+  fi
+  if kube::test::if_supports_resource "pods" ; then
+    kubectl delete "${kube_flags[@]}" pods --all --grace-period=0 --force
+  fi
 }
 
+# Force exact match of a returned result for a object query.  Wrap this with || to support multiple
+# valid return types.
 kube::test::get_object_assert() {
   local object=$1
   local request=$2
   local expected=$3
   local args=${4:-}
 
-  res=$(eval kubectl ${args} get "${kube_flags[@]}" $object -o go-template=\"$request\")
+  res=$(eval kubectl get "${kube_flags[@]}" ${args} $object -o go-template=\"$request\")
 
   if [[ "$res" =~ ^$expected$ ]]; then
       echo -n ${green}
@@ -106,6 +113,44 @@ kube::test::describe_object_assert() {
   return 0
 }
 
+kube::test::describe_object_events_assert() {
+    local resource=$1
+    local object=$2
+    local showevents=${3:-"true"}
+
+    if [[ -z "${3:-}" ]]; then
+        result=$(eval kubectl describe "${kube_flags[@]}" $resource $object)
+    else
+        result=$(eval kubectl describe "${kube_flags[@]}" "--show-events=$showevents" $resource $object)
+    fi
+
+    if [[ -n $(echo "$result" | grep "No events.\|Events:") ]]; then
+        local has_events="true"
+    else
+        local has_events="false"
+    fi
+    if [[ $showevents == $has_events ]]; then
+        echo -n ${green}
+        echo "Successful describe"
+        echo "$result"
+        echo ${reset}
+        return 0
+    else
+        echo ${bold}${red}
+        echo "FAIL"
+        if [[ $showevents == "false" ]]; then
+            echo "  Events information should not be described in:"
+        else
+            echo "  Events information not found in:"
+        fi
+        echo $result
+        echo ${reset}${red}
+        caller
+        echo ${reset}
+        return 1
+    fi
+}
+
 kube::test::describe_resource_assert() {
   local resource=$1
   local matches=${@:2}
@@ -134,6 +179,38 @@ kube::test::describe_resource_assert() {
   return 0
 }
 
+kube::test::describe_resource_events_assert() {
+    local resource=$1
+    local showevents=${2:-"true"}
+
+    result=$(eval kubectl describe "${kube_flags[@]}" "--show-events=$showevents" $resource)
+
+    if [[ $(echo "$result" | grep "No events.\|Events:") ]]; then
+        local has_events="true"
+    else
+        local has_events="false"
+    fi
+    if [[ $showevents == $has_events ]]; then
+        echo -n ${green}
+        echo "Successful describe"
+        echo "$result"
+        echo -n ${reset}
+        return 0
+    else
+        echo ${bold}${red}
+        echo "FAIL"
+        if [[ $showevents == "false" ]]; then
+            echo "  Events information should not be described in:"
+        else
+            echo "  Events information not found in:"
+        fi
+        echo $result
+        caller
+        echo ${reset}
+        return 1
+    fi
+}
+
 kube::test::if_has_string() {
   local message=$1
   local match=$2
@@ -150,4 +227,22 @@ kube::test::if_has_string() {
     caller
     return 1
   fi
+}
+
+# Returns true if the required resource is part of supported resources.
+# Expects env vars:
+#   SUPPORTED_RESOURCES: Array of all resources supported by the apiserver. "*"
+#   means it supports all resources. For ex: ("*") or ("rc" "*") both mean that
+#   all resources are supported.
+#   $1: Name of the resource to be tested.
+kube::test::if_supports_resource() {
+  SUPPORTED_RESOURCES=${SUPPORTED_RESOURCES:-""}
+  REQUIRED_RESOURCE=${1:-""}
+
+  for r in "${SUPPORTED_RESOURCES[@]}"; do
+    if [[ "${r}" == "*" || "${r}" == "${REQUIRED_RESOURCE}" ]]; then
+      return 0
+    fi
+  done
+  return 1
 }

@@ -1,5 +1,5 @@
 /*
-Copyright 2014 The Kubernetes Authors All rights reserved.
+Copyright 2014 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -23,9 +23,9 @@ import (
 	"reflect"
 	"strings"
 
+	utilerrors "k8s.io/apimachinery/pkg/util/errors"
+	"k8s.io/apimachinery/pkg/util/validation"
 	clientcmdapi "k8s.io/kubernetes/pkg/client/unversioned/clientcmd/api"
-	utilerrors "k8s.io/kubernetes/pkg/util/errors"
-	"k8s.io/kubernetes/pkg/util/validation"
 )
 
 var (
@@ -260,8 +260,10 @@ func validateContext(contextName string, context clientcmdapi.Context, config cl
 		validationErrors = append(validationErrors, fmt.Errorf("cluster %q was not found for context %q", context.Cluster, contextName))
 	}
 
-	if (len(context.Namespace) != 0) && !validation.IsDNS952Label(context.Namespace) {
-		validationErrors = append(validationErrors, fmt.Errorf("namespace %q for context %q does not conform to the kubernetes DNS952 rules", context.Namespace, contextName))
+	if len(context.Namespace) != 0 {
+		if len(validation.IsDNS1123Label(context.Namespace)) != 0 {
+			validationErrors = append(validationErrors, fmt.Errorf("namespace %q for context %q does not conform to the kubernetes DNS_LABEL rules", context.Namespace, contextName))
+		}
 	}
 
 	return validationErrors

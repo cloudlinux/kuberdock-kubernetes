@@ -1,4 +1,4 @@
-# Copyright 2016 The Kubernetes Authors All rights reserved.
+# Copyright 2016 The Kubernetes Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -13,7 +13,6 @@
 # limitations under the License.
 
 FROM fedora
-MAINTAINER Jan Safranek, jsafrane@redhat.com
 RUN yum install -y iscsi-initiator-utils targetcli net-tools strace && yum clean all
 ADD run_iscsid.sh /usr/local/bin/
 ADD initiatorname.iscsi /etc/iscsi/

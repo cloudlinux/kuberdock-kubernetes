@@ -1,5 +1,5 @@
 /*
-Copyright 2015 The Kubernetes Authors All rights reserved.
+Copyright 2015 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -20,13 +20,14 @@ import (
 	"reflect"
 	"testing"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/kubernetes/pkg/api"
 	_ "k8s.io/kubernetes/pkg/api/install"
 	"k8s.io/kubernetes/pkg/api/resource"
 	"k8s.io/kubernetes/pkg/api/v1"
 	_ "k8s.io/kubernetes/pkg/apis/extensions/install"
 	. "k8s.io/kubernetes/pkg/apis/extensions/v1beta1"
-	"k8s.io/kubernetes/pkg/runtime"
 	"k8s.io/kubernetes/pkg/util/intstr"
 )
 
@@ -67,7 +68,7 @@ func TestSetDefaultDaemonSet(t *testing.T) {
 					Labels: defaultLabels,
 				},
 				Spec: DaemonSetSpec{
-					Selector: &LabelSelector{
+					Selector: &metav1.LabelSelector{
 						MatchLabels: defaultLabels,
 					},
 					Template: defaultTemplate,
@@ -92,7 +93,7 @@ func TestSetDefaultDaemonSet(t *testing.T) {
 					},
 				},
 				Spec: DaemonSetSpec{
-					Selector: &LabelSelector{
+					Selector: &metav1.LabelSelector{
 						MatchLabels: defaultLabels,
 					},
 					Template: defaultTemplate,
@@ -204,17 +205,22 @@ func TestSetDefaultDeployment(t *testing.T) {
 		{
 			original: &Deployment{
 				Spec: DeploymentSpec{
-					Replicas: newInt32(5),
+					Replicas: newInt32(3),
 					Strategy: DeploymentStrategy{
-						Type: RecreateDeploymentStrategyType,
+						Type:          RollingUpdateDeploymentStrategyType,
+						RollingUpdate: nil,
 					},
 				},
 			},
 			expected: &Deployment{
 				Spec: DeploymentSpec{
-					Replicas: newInt32(5),
+					Replicas: newInt32(3),
 					Strategy: DeploymentStrategy{
-						Type: RecreateDeploymentStrategyType,
+						Type: RollingUpdateDeploymentStrategyType,
+						RollingUpdate: &RollingUpdateDeployment{
+							MaxSurge:       &defaultIntOrString,
+							MaxUnavailable: &defaultIntOrString,
+						},
 					},
 					Template: defaultTemplate,
 				},
@@ -239,6 +245,27 @@ func TestSetDefaultDeployment(t *testing.T) {
 				},
 			},
 		},
+		{
+			original: &Deployment{
+				Spec: DeploymentSpec{
+					Replicas: newInt32(5),
+					Strategy: DeploymentStrategy{
+						Type: RecreateDeploymentStrategyType,
+					},
+					ProgressDeadlineSeconds: newInt32(30),
+				},
+			},
+			expected: &Deployment{
+				Spec: DeploymentSpec{
+					Replicas: newInt32(5),
+					Strategy: DeploymentStrategy{
+						Type: RecreateDeploymentStrategyType,
+					},
+					Template:                defaultTemplate,
+					ProgressDeadlineSeconds: newInt32(30),
+				},
+			},
+		},
 	}
 
 	for _, test := range tests {
@@ -251,230 +278,7 @@ func TestSetDefaultDeployment(t *testing.T) {
 			t.FailNow()
 		}
 		if !reflect.DeepEqual(got.Spec, expected.Spec) {
-			t.Errorf("got different than expected:\n\t%+v\ngot:\n\t%+v", got.Spec, expected.Spec)
-		}
-	}
-}
-
-func TestSetDefaultJobParallelismAndCompletions(t *testing.T) {
-	tests := []struct {
-		original *Job
-		expected *Job
-	}{
-		// both unspecified -> sets both to 1
-		{
-			original: &Job{
-				Spec: JobSpec{},
-			},
-			expected: &Job{
-				Spec: JobSpec{
-					Completions: newInt32(1),
-					Parallelism: newInt32(1),
-				},
-			},
-		},
-		// WQ: Parallelism explicitly 0 and completions unset -> no change
-		{
-			original: &Job{
-				Spec: JobSpec{
-					Parallelism: newInt32(0),
-				},
-			},
-			expected: &Job{
-				Spec: JobSpec{
-					Parallelism: newInt32(0),
-				},
-			},
-		},
-		// WQ: Parallelism explicitly 2 and completions unset -> no change
-		{
-			original: &Job{
-				Spec: JobSpec{
-					Parallelism: newInt32(2),
-				},
-			},
-			expected: &Job{
-				Spec: JobSpec{
-					Parallelism: newInt32(2),
-				},
-			},
-		},
-		// Completions explicitly 2 and parallelism unset -> parallelism is defaulted
-		{
-			original: &Job{
-				Spec: JobSpec{
-					Completions: newInt32(2),
-				},
-			},
-			expected: &Job{
-				Spec: JobSpec{
-					Completions: newInt32(2),
-					Parallelism: newInt32(1),
-				},
-			},
-		},
-		// Both set -> no change
-		{
-			original: &Job{
-				Spec: JobSpec{
-					Completions: newInt32(10),
-					Parallelism: newInt32(11),
-				},
-			},
-			expected: &Job{
-				Spec: JobSpec{
-					Completions: newInt32(10),
-					Parallelism: newInt32(11),
-				},
-			},
-		},
-		// Both set, flipped -> no change
-		{
-			original: &Job{
-				Spec: JobSpec{
-					Completions: newInt32(11),
-					Parallelism: newInt32(10),
-				},
-			},
-			expected: &Job{
-				Spec: JobSpec{
-					Completions: newInt32(11),
-					Parallelism: newInt32(10),
-				},
-			},
-		},
-	}
-
-	for _, tc := range tests {
-		original := tc.original
-		expected := tc.expected
-		obj2 := roundTrip(t, runtime.Object(original))
-		got, ok := obj2.(*Job)
-		if !ok {
-			t.Errorf("unexpected object: %v", got)
-			t.FailNow()
-		}
-		if (got.Spec.Completions == nil) != (expected.Spec.Completions == nil) {
-			t.Errorf("got different *completions than expected: %v %v", got.Spec.Completions, expected.Spec.Completions)
-		}
-		if got.Spec.Completions != nil && expected.Spec.Completions != nil {
-			if *got.Spec.Completions != *expected.Spec.Completions {
-				t.Errorf("got different completions than expected: %d %d", *got.Spec.Completions, *expected.Spec.Completions)
-			}
-		}
-		if (got.Spec.Parallelism == nil) != (expected.Spec.Parallelism == nil) {
-			t.Errorf("got different *Parallelism than expected: %v %v", got.Spec.Parallelism, expected.Spec.Parallelism)
-		}
-		if got.Spec.Parallelism != nil && expected.Spec.Parallelism != nil {
-			if *got.Spec.Parallelism != *expected.Spec.Parallelism {
-				t.Errorf("got different parallelism than expected: %d %d", *got.Spec.Parallelism, *expected.Spec.Parallelism)
-			}
-		}
-	}
-}
-
-func TestSetDefaultJobSelector(t *testing.T) {
-	tests := []struct {
-		original         *Job
-		expectedSelector *LabelSelector
-	}{
-		// selector set explicitly, nil autoSelector
-		{
-			original: &Job{
-				Spec: JobSpec{
-					Selector: &LabelSelector{
-						MatchLabels: map[string]string{"job": "selector"},
-					},
-				},
-			},
-			expectedSelector: &LabelSelector{
-				MatchLabels: map[string]string{"job": "selector"},
-			},
-		},
-		// selector set explicitly, autoSelector=true
-		{
-			original: &Job{
-				Spec: JobSpec{
-					Selector: &LabelSelector{
-						MatchLabels: map[string]string{"job": "selector"},
-					},
-					AutoSelector: newBool(true),
-				},
-			},
-			expectedSelector: &LabelSelector{
-				MatchLabels: map[string]string{"job": "selector"},
-			},
-		},
-		// selector set explicitly, autoSelector=false
-		{
-			original: &Job{
-				Spec: JobSpec{
-					Selector: &LabelSelector{
-						MatchLabels: map[string]string{"job": "selector"},
-					},
-					AutoSelector: newBool(false),
-				},
-			},
-			expectedSelector: &LabelSelector{
-				MatchLabels: map[string]string{"job": "selector"},
-			},
-		},
-		// selector from template labels
-		{
-			original: &Job{
-				Spec: JobSpec{
-					Template: v1.PodTemplateSpec{
-						ObjectMeta: v1.ObjectMeta{
-							Labels: map[string]string{"job": "selector"},
-						},
-					},
-				},
-			},
-			expectedSelector: &LabelSelector{
-				MatchLabels: map[string]string{"job": "selector"},
-			},
-		},
-		// selector from template labels, autoSelector=false
-		{
-			original: &Job{
-				Spec: JobSpec{
-					Template: v1.PodTemplateSpec{
-						ObjectMeta: v1.ObjectMeta{
-							Labels: map[string]string{"job": "selector"},
-						},
-					},
-					AutoSelector: newBool(false),
-				},
-			},
-			expectedSelector: &LabelSelector{
-				MatchLabels: map[string]string{"job": "selector"},
-			},
-		},
-		// selector not copied from template labels, autoSelector=true
-		{
-			original: &Job{
-				Spec: JobSpec{
-					Template: v1.PodTemplateSpec{
-						ObjectMeta: v1.ObjectMeta{
-							Labels: map[string]string{"job": "selector"},
-						},
-					},
-					AutoSelector: newBool(true),
-				},
-			},
-			expectedSelector: nil,
-		},
-	}
-
-	for i, testcase := range tests {
-		obj2 := roundTrip(t, runtime.Object(testcase.original))
-		got, ok := obj2.(*Job)
-		if !ok {
-			t.Errorf("%d: unexpected object: %v", i, got)
-			t.FailNow()
-		}
-		if !reflect.DeepEqual(got.Spec.Selector, testcase.expectedSelector) {
-			t.Errorf("%d: got different selectors %#v %#v", i, got.Spec.Selector, testcase.expectedSelector)
+			t.Errorf("object mismatch!\nexpected:\n\t%+v\ngot:\n\t%+v", got.Spec, expected.Spec)
 		}
 	}
 }
@@ -528,7 +332,7 @@ func TestSetDefaultReplicaSet(t *testing.T) {
 					},
 				},
 				Spec: ReplicaSetSpec{
-					Selector: &LabelSelector{
+					Selector: &metav1.LabelSelector{
 						MatchLabels: map[string]string{
 							"some": "other",
 						},
@@ -548,7 +352,7 @@ func TestSetDefaultReplicaSet(t *testing.T) {
 		{
 			rs: &ReplicaSet{
 				Spec: ReplicaSetSpec{
-					Selector: &LabelSelector{
+					Selector: &metav1.LabelSelector{
 						MatchLabels: map[string]string{
 							"some": "other",
 						},
@@ -692,6 +496,78 @@ func TestDefaultRequestIsNotSetForReplicaSet(t *testing.T) {
 	}
 }
 
+func TestSetDefaultHorizontalPodAutoscalerMinReplicas(t *testing.T) {
+	tests := []struct {
+		hpa            HorizontalPodAutoscaler
+		expectReplicas int32
+	}{
+		{
+			hpa:            HorizontalPodAutoscaler{},
+			expectReplicas: 1,
+		},
+		{
+			hpa: HorizontalPodAutoscaler{
+				Spec: HorizontalPodAutoscalerSpec{
+					MinReplicas: newInt32(3),
+				},
+			},
+			expectReplicas: 3,
+		},
+	}
+
+	for _, test := range tests {
+		hpa := &test.hpa
+		obj2 := roundTrip(t, runtime.Object(hpa))
+		hpa2, ok := obj2.(*HorizontalPodAutoscaler)
+		if !ok {
+			t.Errorf("unexpected object: %v", hpa2)
+			t.FailNow()
+		}
+		if hpa2.Spec.MinReplicas == nil {
+			t.Errorf("unexpected nil MinReplicas")
+		} else if test.expectReplicas != *hpa2.Spec.MinReplicas {
+			t.Errorf("expected: %d MinReplicas, got: %d", test.expectReplicas, *hpa2.Spec.MinReplicas)
+		}
+	}
+}
+
+func TestSetDefaultHorizontalPodAutoscalerCpuUtilization(t *testing.T) {
+	tests := []struct {
+		hpa               HorizontalPodAutoscaler
+		expectUtilization int32
+	}{
+		{
+			hpa:               HorizontalPodAutoscaler{},
+			expectUtilization: 80,
+		},
+		{
+			hpa: HorizontalPodAutoscaler{
+				Spec: HorizontalPodAutoscalerSpec{
+					CPUUtilization: &CPUTargetUtilization{
+						TargetPercentage: int32(50),
+					},
+				},
+			},
+			expectUtilization: 50,
+		},
+	}
+
+	for _, test := range tests {
+		hpa := &test.hpa
+		obj2 := roundTrip(t, runtime.Object(hpa))
+		hpa2, ok := obj2.(*HorizontalPodAutoscaler)
+		if !ok {
+			t.Errorf("unexpected object: %v", hpa2)
+			t.FailNow()
+		}
+		if hpa2.Spec.CPUUtilization == nil {
+			t.Errorf("unexpected nil CPUUtilization")
+		} else if test.expectUtilization != hpa2.Spec.CPUUtilization.TargetPercentage {
+			t.Errorf("expected: %d CPUUtilization, got: %d", test.expectUtilization, hpa2.Spec.CPUUtilization.TargetPercentage)
+		}
+	}
+}
+
 func roundTrip(t *testing.T, obj runtime.Object) runtime.Object {
 	data, err := runtime.Encode(api.Codecs.LegacyCodec(SchemeGroupVersion), obj)
 	if err != nil {
@@ -704,7 +580,7 @@ func roundTrip(t *testing.T, obj runtime.Object) runtime.Object {
 		return nil
 	}
 	obj3 := reflect.New(reflect.TypeOf(obj).Elem()).Interface().(runtime.Object)
-	err = api.Scheme.Convert(obj2, obj3)
+	err = api.Scheme.Convert(obj2, obj3, nil)
 	if err != nil {
 		t.Errorf("%v\nSource: %#v", err, obj2)
 		return nil

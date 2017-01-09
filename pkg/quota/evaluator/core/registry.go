@@ -1,5 +1,5 @@
 /*
-Copyright 2016 The Kubernetes Authors All rights reserved.
+Copyright 2016 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -17,23 +17,25 @@ limitations under the License.
 package core
 
 import (
-	"k8s.io/kubernetes/pkg/api/unversioned"
-	clientset "k8s.io/kubernetes/pkg/client/clientset_generated/internalclientset"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/kubernetes/pkg/client/clientset_generated/clientset"
+	"k8s.io/kubernetes/pkg/controller/informers"
 	"k8s.io/kubernetes/pkg/quota"
 	"k8s.io/kubernetes/pkg/quota/generic"
 )
 
 // NewRegistry returns a registry that knows how to deal with core kubernetes resources
-func NewRegistry(kubeClient clientset.Interface) quota.Registry {
-	pod := NewPodEvaluator(kubeClient)
+// If an informer factory is provided, evaluators will use them.
+func NewRegistry(kubeClient clientset.Interface, f informers.SharedInformerFactory) quota.Registry {
+	pod := NewPodEvaluator(kubeClient, f)
 	service := NewServiceEvaluator(kubeClient)
 	replicationController := NewReplicationControllerEvaluator(kubeClient)
 	resourceQuota := NewResourceQuotaEvaluator(kubeClient)
 	secret := NewSecretEvaluator(kubeClient)
 	configMap := NewConfigMapEvaluator(kubeClient)
-	persistentVolumeClaim := NewPersistentVolumeClaimEvaluator(kubeClient)
+	persistentVolumeClaim := NewPersistentVolumeClaimEvaluator(kubeClient, f)
 	return &generic.GenericRegistry{
-		InternalEvaluators: map[unversioned.GroupKind]quota.Evaluator{
+		InternalEvaluators: map[schema.GroupKind]quota.Evaluator{
 			pod.GroupKind():                   pod,
 			service.GroupKind():               service,
 			replicationController.GroupKind(): replicationController,

@@ -1,5 +1,5 @@
 /*
-Copyright 2014 The Kubernetes Authors All rights reserved.
+Copyright 2014 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -22,39 +22,45 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"k8s.io/kubernetes/pkg/api"
-	"k8s.io/kubernetes/pkg/auth/authenticator"
-	"k8s.io/kubernetes/pkg/auth/user"
+	"k8s.io/apiserver/pkg/authentication/authenticator"
+	"k8s.io/apiserver/pkg/authentication/user"
+	genericapirequest "k8s.io/apiserver/pkg/request"
 )
 
 func TestAuthenticateRequest(t *testing.T) {
 	success := make(chan struct{})
-	contextMapper := api.NewRequestContextMapper()
-	auth, err := NewRequestAuthenticator(
-		contextMapper,
-		authenticator.RequestFunc(func(req *http.Request) (user.Info, bool, error) {
-			return &user.DefaultInfo{Name: "user"}, true, nil
-		}),
-		http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
-			t.Errorf("unexpected call to failed")
-		}),
+	contextMapper := genericapirequest.NewRequestContextMapper()
+	auth := WithAuthentication(
 		http.HandlerFunc(func(_ http.ResponseWriter, req *http.Request) {
 			ctx, ok := contextMapper.Get(req)
 			if ctx == nil || !ok {
 				t.Errorf("no context stored on contextMapper: %#v", contextMapper)
 			}
-			user, ok := api.UserFrom(ctx)
+			user, ok := genericapirequest.UserFrom(ctx)
 			if user == nil || !ok {
 				t.Errorf("no user stored in context: %#v", ctx)
 			}
+			if req.Header.Get("Authorization") != "" {
+				t.Errorf("Authorization header should be removed from request on success: %#v", req)
+			}
 			close(success)
+		}),
+		contextMapper,
+		authenticator.RequestFunc(func(req *http.Request) (user.Info, bool, error) {
+			if req.Header.Get("Authorization") == "Something" {
+				return &user.DefaultInfo{Name: "user"}, true, nil
+			}
+			return nil, false, errors.New("Authorization header is missing.")
+		}),
+		http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
+			t.Errorf("unexpected call to failed")
 		}),
 	)
 
-	auth.ServeHTTP(httptest.NewRecorder(), &http.Request{})
+	auth.ServeHTTP(httptest.NewRecorder(), &http.Request{Header: map[string][]string{"Authorization": {"Something"}}})
 
 	<-success
-	empty, err := api.IsEmpty(contextMapper)
+	empty, err := genericapirequest.IsEmpty(contextMapper)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -65,8 +71,11 @@ func TestAuthenticateRequest(t *testing.T) {
 
 func TestAuthenticateRequestFailed(t *testing.T) {
 	failed := make(chan struct{})
-	contextMapper := api.NewRequestContextMapper()
-	auth, err := NewRequestAuthenticator(
+	contextMapper := genericapirequest.NewRequestContextMapper()
+	auth := WithAuthentication(
+		http.HandlerFunc(func(_ http.ResponseWriter, req *http.Request) {
+			t.Errorf("unexpected call to handler")
+		}),
 		contextMapper,
 		authenticator.RequestFunc(func(req *http.Request) (user.Info, bool, error) {
 			return nil, false, nil
@@ -74,15 +83,12 @@ func TestAuthenticateRequestFailed(t *testing.T) {
 		http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
 			close(failed)
 		}),
-		http.HandlerFunc(func(_ http.ResponseWriter, req *http.Request) {
-			t.Errorf("unexpected call to handler")
-		}),
 	)
 
 	auth.ServeHTTP(httptest.NewRecorder(), &http.Request{})
 
 	<-failed
-	empty, err := api.IsEmpty(contextMapper)
+	empty, err := genericapirequest.IsEmpty(contextMapper)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -93,8 +99,11 @@ func TestAuthenticateRequestFailed(t *testing.T) {
 
 func TestAuthenticateRequestError(t *testing.T) {
 	failed := make(chan struct{})
-	contextMapper := api.NewRequestContextMapper()
-	auth, err := NewRequestAuthenticator(
+	contextMapper := genericapirequest.NewRequestContextMapper()
+	auth := WithAuthentication(
+		http.HandlerFunc(func(_ http.ResponseWriter, req *http.Request) {
+			t.Errorf("unexpected call to handler")
+		}),
 		contextMapper,
 		authenticator.RequestFunc(func(req *http.Request) (user.Info, bool, error) {
 			return nil, false, errors.New("failure")
@@ -102,15 +111,12 @@ func TestAuthenticateRequestError(t *testing.T) {
 		http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
 			close(failed)
 		}),
-		http.HandlerFunc(func(_ http.ResponseWriter, req *http.Request) {
-			t.Errorf("unexpected call to handler")
-		}),
 	)
 
 	auth.ServeHTTP(httptest.NewRecorder(), &http.Request{})
 
 	<-failed
-	empty, err := api.IsEmpty(contextMapper)
+	empty, err := genericapirequest.IsEmpty(contextMapper)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

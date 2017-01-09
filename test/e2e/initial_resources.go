@@ -1,5 +1,5 @@
 /*
-Copyright 2015 The Kubernetes Authors All rights reserved.
+Copyright 2015 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -22,15 +22,16 @@ import (
 
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
-	"k8s.io/kubernetes/pkg/api"
+	"k8s.io/kubernetes/pkg/api/v1"
+	"k8s.io/kubernetes/test/e2e/framework"
 )
 
 // [Feature:InitialResources]: Initial resources is an experimental feature, so
 // these tests are not run by default.
 //
 // Flaky issue #20272
-var _ = Describe("Initial Resources [Feature:InitialResources] [Flaky]", func() {
-	f := NewDefaultFramework("initial-resources")
+var _ = framework.KubeDescribe("Initial Resources [Feature:InitialResources] [Flaky]", func() {
+	f := framework.NewDefaultFramework("initial-resources")
 
 	It("should set initial resources based on historical data", func() {
 		// TODO(piosz): Add cleanup data in InfluxDB that left from previous tests.
@@ -50,13 +51,13 @@ var _ = Describe("Initial Resources [Feature:InitialResources] [Flaky]", func() 
 	})
 })
 
-func runPod(f *Framework, name, image string) *api.Pod {
-	pod := &api.Pod{
-		ObjectMeta: api.ObjectMeta{
+func runPod(f *framework.Framework, name, image string) *v1.Pod {
+	pod := &v1.Pod{
+		ObjectMeta: v1.ObjectMeta{
 			Name: name,
 		},
-		Spec: api.PodSpec{
-			Containers: []api.Container{
+		Spec: v1.PodSpec{
+			Containers: []v1.Container{
 				{
 					Name:  name,
 					Image: image,
@@ -64,8 +65,8 @@ func runPod(f *Framework, name, image string) *api.Pod {
 			},
 		},
 	}
-	createdPod, err := f.Client.Pods(f.Namespace.Name).Create(pod)
-	expectNoError(err)
-	expectNoError(waitForPodRunningInNamespace(f.Client, name, f.Namespace.Name))
+	createdPod, err := f.ClientSet.Core().Pods(f.Namespace.Name).Create(pod)
+	framework.ExpectNoError(err)
+	framework.ExpectNoError(framework.WaitForPodRunningInNamespace(f.ClientSet, createdPod))
 	return createdPod
 }

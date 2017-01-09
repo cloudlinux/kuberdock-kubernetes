@@ -1,5 +1,5 @@
 /*
-Copyright 2015 The Kubernetes Authors All rights reserved.
+Copyright 2015 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -21,8 +21,10 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 
-	"k8s.io/kubernetes/pkg/auth/user"
+	"github.com/golang/glog"
+	"k8s.io/apiserver/pkg/authentication/user"
 )
 
 type PasswordAuthenticator struct {
@@ -43,8 +45,10 @@ func NewCSV(path string) (*PasswordAuthenticator, error) {
 	}
 	defer file.Close()
 
+	recordNum := 0
 	users := make(map[string]*userPasswordInfo)
 	reader := csv.NewReader(file)
+	reader.FieldsPerRecord = -1
 	for {
 		record, err := reader.Read()
 		if err == io.EOF {
@@ -59,6 +63,13 @@ func NewCSV(path string) (*PasswordAuthenticator, error) {
 		obj := &userPasswordInfo{
 			info:     &user.DefaultInfo{Name: record[1], UID: record[2]},
 			password: record[0],
+		}
+		if len(record) >= 4 {
+			obj.info.Groups = strings.Split(record[3], ",")
+		}
+		recordNum++
+		if _, exist := users[obj.info.Name]; exist {
+			glog.Warningf("duplicate username '%s' has been found in password file '%s', record number '%d'", obj.info.Name, path, recordNum)
 		}
 		users[obj.info.Name] = obj
 	}

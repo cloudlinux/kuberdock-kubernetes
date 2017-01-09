@@ -1,5 +1,5 @@
 /*
-Copyright 2015 The Kubernetes Authors All rights reserved.
+Copyright 2015 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -23,9 +23,10 @@ import (
 	"reflect"
 	"testing"
 
-	"k8s.io/kubernetes/pkg/api"
+	"k8s.io/kubernetes/pkg/api/v1"
 	"k8s.io/kubernetes/pkg/client/record"
 	kubecontainer "k8s.io/kubernetes/pkg/kubelet/container"
+	containertest "k8s.io/kubernetes/pkg/kubelet/container/testing"
 	"k8s.io/kubernetes/pkg/kubelet/prober/results"
 	"k8s.io/kubernetes/pkg/probe"
 	"k8s.io/kubernetes/pkg/util/intstr"
@@ -41,6 +42,8 @@ func TestFormatURL(t *testing.T) {
 	}{
 		{"http", "localhost", 93, "", "http://localhost:93"},
 		{"https", "localhost", 93, "/path", "https://localhost:93/path"},
+		{"http", "localhost", 93, "?foo", "http://localhost:93?foo"},
+		{"https", "localhost", 93, "/path?bar", "https://localhost:93/path?bar"},
 	}
 	for _, test := range testCases {
 		url := formatURL(test.scheme, test.host, test.port, test.path)
@@ -51,8 +54,8 @@ func TestFormatURL(t *testing.T) {
 }
 
 func TestFindPortByName(t *testing.T) {
-	container := api.Container{
-		Ports: []api.ContainerPort{
+	container := v1.Container{
+		Ports: []v1.ContainerPort{
 			{
 				Name:          "foo",
 				ContainerPort: 8080,
@@ -72,28 +75,28 @@ func TestFindPortByName(t *testing.T) {
 
 func TestGetURLParts(t *testing.T) {
 	testCases := []struct {
-		probe *api.HTTPGetAction
+		probe *v1.HTTPGetAction
 		ok    bool
 		host  string
 		port  int
 		path  string
 	}{
-		{&api.HTTPGetAction{Host: "", Port: intstr.FromInt(-1), Path: ""}, false, "", -1, ""},
-		{&api.HTTPGetAction{Host: "", Port: intstr.FromString(""), Path: ""}, false, "", -1, ""},
-		{&api.HTTPGetAction{Host: "", Port: intstr.FromString("-1"), Path: ""}, false, "", -1, ""},
-		{&api.HTTPGetAction{Host: "", Port: intstr.FromString("not-found"), Path: ""}, false, "", -1, ""},
-		{&api.HTTPGetAction{Host: "", Port: intstr.FromString("found"), Path: ""}, true, "127.0.0.1", 93, ""},
-		{&api.HTTPGetAction{Host: "", Port: intstr.FromInt(76), Path: ""}, true, "127.0.0.1", 76, ""},
-		{&api.HTTPGetAction{Host: "", Port: intstr.FromString("118"), Path: ""}, true, "127.0.0.1", 118, ""},
-		{&api.HTTPGetAction{Host: "hostname", Port: intstr.FromInt(76), Path: "path"}, true, "hostname", 76, "path"},
+		{&v1.HTTPGetAction{Host: "", Port: intstr.FromInt(-1), Path: ""}, false, "", -1, ""},
+		{&v1.HTTPGetAction{Host: "", Port: intstr.FromString(""), Path: ""}, false, "", -1, ""},
+		{&v1.HTTPGetAction{Host: "", Port: intstr.FromString("-1"), Path: ""}, false, "", -1, ""},
+		{&v1.HTTPGetAction{Host: "", Port: intstr.FromString("not-found"), Path: ""}, false, "", -1, ""},
+		{&v1.HTTPGetAction{Host: "", Port: intstr.FromString("found"), Path: ""}, true, "127.0.0.1", 93, ""},
+		{&v1.HTTPGetAction{Host: "", Port: intstr.FromInt(76), Path: ""}, true, "127.0.0.1", 76, ""},
+		{&v1.HTTPGetAction{Host: "", Port: intstr.FromString("118"), Path: ""}, true, "127.0.0.1", 118, ""},
+		{&v1.HTTPGetAction{Host: "hostname", Port: intstr.FromInt(76), Path: "path"}, true, "hostname", 76, "path"},
 	}
 
 	for _, test := range testCases {
-		state := api.PodStatus{PodIP: "127.0.0.1"}
-		container := api.Container{
-			Ports: []api.ContainerPort{{Name: "found", ContainerPort: 93}},
-			LivenessProbe: &api.Probe{
-				Handler: api.Handler{
+		state := v1.PodStatus{PodIP: "127.0.0.1"}
+		container := v1.Container{
+			Ports: []v1.ContainerPort{{Name: "found", ContainerPort: 93}},
+			LivenessProbe: &v1.Probe{
+				Handler: v1.Handler{
 					HTTPGet: test.probe,
 				},
 			},
@@ -101,7 +104,7 @@ func TestGetURLParts(t *testing.T) {
 
 		scheme := test.probe.Scheme
 		if scheme == "" {
-			scheme = api.URISchemeHTTP
+			scheme = v1.URISchemeHTTP
 		}
 		host := test.probe.Host
 		if host == "" {
@@ -127,26 +130,26 @@ func TestGetURLParts(t *testing.T) {
 
 func TestGetTCPAddrParts(t *testing.T) {
 	testCases := []struct {
-		probe *api.TCPSocketAction
+		probe *v1.TCPSocketAction
 		ok    bool
 		host  string
 		port  int
 	}{
-		{&api.TCPSocketAction{Port: intstr.FromInt(-1)}, false, "", -1},
-		{&api.TCPSocketAction{Port: intstr.FromString("")}, false, "", -1},
-		{&api.TCPSocketAction{Port: intstr.FromString("-1")}, false, "", -1},
-		{&api.TCPSocketAction{Port: intstr.FromString("not-found")}, false, "", -1},
-		{&api.TCPSocketAction{Port: intstr.FromString("found")}, true, "1.2.3.4", 93},
-		{&api.TCPSocketAction{Port: intstr.FromInt(76)}, true, "1.2.3.4", 76},
-		{&api.TCPSocketAction{Port: intstr.FromString("118")}, true, "1.2.3.4", 118},
+		{&v1.TCPSocketAction{Port: intstr.FromInt(-1)}, false, "", -1},
+		{&v1.TCPSocketAction{Port: intstr.FromString("")}, false, "", -1},
+		{&v1.TCPSocketAction{Port: intstr.FromString("-1")}, false, "", -1},
+		{&v1.TCPSocketAction{Port: intstr.FromString("not-found")}, false, "", -1},
+		{&v1.TCPSocketAction{Port: intstr.FromString("found")}, true, "1.2.3.4", 93},
+		{&v1.TCPSocketAction{Port: intstr.FromInt(76)}, true, "1.2.3.4", 76},
+		{&v1.TCPSocketAction{Port: intstr.FromString("118")}, true, "1.2.3.4", 118},
 	}
 
 	for _, test := range testCases {
 		host := "1.2.3.4"
-		container := api.Container{
-			Ports: []api.ContainerPort{{Name: "found", ContainerPort: 93}},
-			LivenessProbe: &api.Probe{
-				Handler: api.Handler{
+		container := v1.Container{
+			Ports: []v1.ContainerPort{{Name: "found", ContainerPort: 93}},
+			LivenessProbe: &v1.Probe{
+				Handler: v1.Handler{
 					TCPSocket: test.probe,
 				},
 			},
@@ -168,21 +171,21 @@ func TestGetTCPAddrParts(t *testing.T) {
 
 func TestHTTPHeaders(t *testing.T) {
 	testCases := []struct {
-		input  []api.HTTPHeader
+		input  []v1.HTTPHeader
 		output http.Header
 	}{
-		{[]api.HTTPHeader{}, http.Header{}},
-		{[]api.HTTPHeader{
-			{"X-Muffins-Or-Cupcakes", "Muffins"},
+		{[]v1.HTTPHeader{}, http.Header{}},
+		{[]v1.HTTPHeader{
+			{Name: "X-Muffins-Or-Cupcakes", Value: "Muffins"},
 		}, http.Header{"X-Muffins-Or-Cupcakes": {"Muffins"}}},
-		{[]api.HTTPHeader{
-			{"X-Muffins-Or-Cupcakes", "Muffins"},
-			{"X-Muffins-Or-Plumcakes", "Muffins!"},
+		{[]v1.HTTPHeader{
+			{Name: "X-Muffins-Or-Cupcakes", Value: "Muffins"},
+			{Name: "X-Muffins-Or-Plumcakes", Value: "Muffins!"},
 		}, http.Header{"X-Muffins-Or-Cupcakes": {"Muffins"},
 			"X-Muffins-Or-Plumcakes": {"Muffins!"}}},
-		{[]api.HTTPHeader{
-			{"X-Muffins-Or-Cupcakes", "Muffins"},
-			{"X-Muffins-Or-Cupcakes", "Cupcakes, too"},
+		{[]v1.HTTPHeader{
+			{Name: "X-Muffins-Or-Cupcakes", Value: "Muffins"},
+			{Name: "X-Muffins-Or-Cupcakes", Value: "Cupcakes, too"},
 		}, http.Header{"X-Muffins-Or-Cupcakes": {"Muffins", "Cupcakes, too"}}},
 	}
 	for _, test := range testCases {
@@ -198,15 +201,15 @@ func TestProbe(t *testing.T) {
 		refManager: kubecontainer.NewRefManager(),
 		recorder:   &record.FakeRecorder{},
 	}
-	containerID := kubecontainer.ContainerID{"test", "foobar"}
+	containerID := kubecontainer.ContainerID{Type: "test", ID: "foobar"}
 
-	execProbe := &api.Probe{
-		Handler: api.Handler{
-			Exec: &api.ExecAction{},
+	execProbe := &v1.Probe{
+		Handler: v1.Handler{
+			Exec: &v1.ExecAction{},
 		},
 	}
 	tests := []struct {
-		probe          *api.Probe
+		probe          *v1.Probe
 		execError      bool
 		expectError    bool
 		execResult     probe.Result
@@ -217,7 +220,7 @@ func TestProbe(t *testing.T) {
 			expectedResult: results.Success,
 		},
 		{ // No handler
-			probe:          &api.Probe{},
+			probe:          &v1.Probe{},
 			expectError:    true,
 			expectedResult: results.Failure,
 		},
@@ -248,7 +251,7 @@ func TestProbe(t *testing.T) {
 	for i, test := range tests {
 		for _, probeType := range [...]probeType{liveness, readiness} {
 			testID := fmt.Sprintf("%d-%s", i, probeType)
-			testContainer := api.Container{}
+			testContainer := v1.Container{}
 			switch probeType {
 			case liveness:
 				testContainer.LivenessProbe = test.probe
@@ -261,7 +264,7 @@ func TestProbe(t *testing.T) {
 				prober.exec = fakeExecProber{test.execResult, nil}
 			}
 
-			result, err := prober.probe(probeType, &api.Pod{}, api.PodStatus{}, testContainer, containerID)
+			result, err := prober.probe(probeType, &v1.Pod{}, v1.PodStatus{}, testContainer, containerID)
 			if test.expectError && err == nil {
 				t.Errorf("[%s] Expected probe error but no error was returned.", testID)
 			}
@@ -271,6 +274,52 @@ func TestProbe(t *testing.T) {
 			if test.expectedResult != result {
 				t.Errorf("[%s] Expected result to be %v but was %v", testID, test.expectedResult, result)
 			}
+		}
+	}
+}
+
+func TestNewExecInContainer(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+	}{
+		{
+			name: "no error",
+			err:  nil,
+		},
+		{
+			name: "error - make sure we get output",
+			err:  errors.New("bad"),
+		},
+	}
+
+	for _, test := range tests {
+		runner := &containertest.FakeContainerCommandRunner{
+			Stdout: "foo",
+			Err:    test.err,
+		}
+		prober := &prober{
+			runner: runner,
+		}
+
+		container := v1.Container{}
+		containerID := kubecontainer.ContainerID{Type: "docker", ID: "containerID"}
+		cmd := []string{"/foo", "bar"}
+		exec := prober.newExecInContainer(container, containerID, cmd, 0)
+
+		actualOutput, err := exec.CombinedOutput()
+		if e, a := containerID, runner.ContainerID; e != a {
+			t.Errorf("%s: container id: expected %v, got %v", test.name, e, a)
+		}
+		if e, a := cmd, runner.Cmd; !reflect.DeepEqual(e, a) {
+			t.Errorf("%s: cmd: expected %v, got %v", test.name, e, a)
+		}
+		// this isn't 100% foolproof as a bug in a real ContainerCommandRunner where it fails to copy to stdout/stderr wouldn't be caught by this test
+		if e, a := "foo", string(actualOutput); e != a {
+			t.Errorf("%s: output: expected %q, got %q", test.name, e, a)
+		}
+		if e, a := fmt.Sprintf("%v", test.err), fmt.Sprintf("%v", err); e != a {
+			t.Errorf("%s: error: expected %s, got %s", test.name, e, a)
 		}
 	}
 }

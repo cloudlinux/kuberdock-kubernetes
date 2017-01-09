@@ -1,5 +1,5 @@
 /*
-Copyright 2015 The Kubernetes Authors All rights reserved.
+Copyright 2015 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -18,14 +18,15 @@ package flexvolume
 
 import (
 	"bytes"
+	"encoding/base64"
 	"fmt"
 	"os"
 	"path"
 	"testing"
 	"text/template"
 
-	"k8s.io/kubernetes/pkg/api"
-	"k8s.io/kubernetes/pkg/types"
+	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/kubernetes/pkg/api/v1"
 	"k8s.io/kubernetes/pkg/util/exec"
 	"k8s.io/kubernetes/pkg/util/mount"
 	utiltesting "k8s.io/kubernetes/pkg/util/testing"
@@ -186,16 +187,16 @@ func TestCanSupport(t *testing.T) {
 	if err != nil {
 		t.Errorf("Can't find the plugin by name")
 	}
-	if plugin.Name() != "kubernetes.io/fakeAttacher" {
-		t.Errorf("Wrong name: %s", plugin.Name())
+	if plugin.GetPluginName() != "kubernetes.io/fakeAttacher" {
+		t.Errorf("Wrong name: %s", plugin.GetPluginName())
 	}
-	if !plugin.CanSupport(&volume.Spec{Volume: &api.Volume{VolumeSource: api.VolumeSource{FlexVolume: &api.FlexVolumeSource{Driver: "kubernetes.io/fakeAttacher"}}}}) {
+	if !plugin.CanSupport(&volume.Spec{Volume: &v1.Volume{VolumeSource: v1.VolumeSource{FlexVolume: &v1.FlexVolumeSource{Driver: "kubernetes.io/fakeAttacher"}}}}) {
 		t.Errorf("Expected true")
 	}
-	if !plugin.CanSupport(&volume.Spec{PersistentVolume: &api.PersistentVolume{Spec: api.PersistentVolumeSpec{PersistentVolumeSource: api.PersistentVolumeSource{FlexVolume: &api.FlexVolumeSource{Driver: "kubernetes.io/fakeAttacher"}}}}}) {
+	if !plugin.CanSupport(&volume.Spec{PersistentVolume: &v1.PersistentVolume{Spec: v1.PersistentVolumeSpec{PersistentVolumeSource: v1.PersistentVolumeSource{FlexVolume: &v1.FlexVolumeSource{Driver: "kubernetes.io/fakeAttacher"}}}}}) {
 		t.Errorf("Expected true")
 	}
-	if plugin.CanSupport(&volume.Spec{Volume: &api.Volume{VolumeSource: api.VolumeSource{}}}) {
+	if plugin.CanSupport(&volume.Spec{Volume: &v1.Volume{VolumeSource: v1.VolumeSource{}}}) {
 		t.Errorf("Expected false")
 	}
 }
@@ -215,12 +216,12 @@ func TestGetAccessModes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Can't find the plugin by name")
 	}
-	if !contains(plugin.GetAccessModes(), api.ReadWriteOnce) || !contains(plugin.GetAccessModes(), api.ReadOnlyMany) {
-		t.Errorf("Expected two AccessModeTypes:  %s and %s", api.ReadWriteOnce, api.ReadOnlyMany)
+	if !contains(plugin.GetAccessModes(), v1.ReadWriteOnce) || !contains(plugin.GetAccessModes(), v1.ReadOnlyMany) {
+		t.Errorf("Expected two AccessModeTypes:  %s and %s", v1.ReadWriteOnce, v1.ReadOnlyMany)
 	}
 }
 
-func contains(modes []api.PersistentVolumeAccessMode, mode api.PersistentVolumeAccessMode) bool {
+func contains(modes []v1.PersistentVolumeAccessMode, mode v1.PersistentVolumeAccessMode) bool {
 	for _, m := range modes {
 		if m == mode {
 			return true
@@ -238,21 +239,23 @@ func doTestPluginAttachDetach(t *testing.T, spec *volume.Spec, tmpDir string) {
 		t.Errorf("Can't find the plugin by name")
 	}
 	fake := &mount.FakeMounter{}
-	pod := &api.Pod{ObjectMeta: api.ObjectMeta{UID: types.UID("poduid")}}
-	builder, err := plugin.(*flexVolumePlugin).newBuilderInternal(spec, pod, &flexVolumeUtil{}, fake, exec.New(), "")
-	volumePath := builder.GetPath()
+	pod := &v1.Pod{ObjectMeta: v1.ObjectMeta{UID: types.UID("poduid")}}
+	secretMap := make(map[string]string)
+	secretMap["flexsecret"] = base64.StdEncoding.EncodeToString([]byte("foo"))
+	mounter, err := plugin.(*flexVolumePlugin).newMounterInternal(spec, pod, &flexVolumeUtil{}, fake, exec.New(), secretMap)
+	volumePath := mounter.GetPath()
 	if err != nil {
-		t.Errorf("Failed to make a new Builder: %v", err)
+		t.Errorf("Failed to make a new Mounter: %v", err)
 	}
-	if builder == nil {
-		t.Errorf("Got a nil Builder")
+	if mounter == nil {
+		t.Errorf("Got a nil Mounter")
 	}
-	path := builder.GetPath()
+	path := mounter.GetPath()
 	expectedPath := fmt.Sprintf("%s/pods/poduid/volumes/kubernetes.io~fakeAttacher/vol1", tmpDir)
 	if path != expectedPath {
 		t.Errorf("Unexpected path, expected %q, got: %q", expectedPath, path)
 	}
-	if err := builder.SetUp(nil); err != nil {
+	if err := mounter.SetUp(nil); err != nil {
 		t.Errorf("Expected success, got: %v", err)
 	}
 	if _, err := os.Stat(volumePath); err != nil {
@@ -263,7 +266,7 @@ func doTestPluginAttachDetach(t *testing.T, spec *volume.Spec, tmpDir string) {
 		}
 	}
 	t.Logf("Setup successful")
-	if builder.(*flexVolumeBuilder).readOnly {
+	if mounter.(*flexVolumeMounter).readOnly {
 		t.Errorf("The volume source should not be read-only and it is.")
 	}
 
@@ -276,14 +279,14 @@ func doTestPluginAttachDetach(t *testing.T, spec *volume.Spec, tmpDir string) {
 	}
 	fake.ResetLog()
 
-	cleaner, err := plugin.(*flexVolumePlugin).newCleanerInternal("vol1", types.UID("poduid"), &flexVolumeUtil{}, fake, exec.New())
+	unmounter, err := plugin.(*flexVolumePlugin).newUnmounterInternal("vol1", types.UID("poduid"), &flexVolumeUtil{}, fake, exec.New())
 	if err != nil {
-		t.Errorf("Failed to make a new Cleaner: %v", err)
+		t.Errorf("Failed to make a new Unmounter: %v", err)
 	}
-	if cleaner == nil {
-		t.Errorf("Got a nil Cleaner")
+	if unmounter == nil {
+		t.Errorf("Got a nil Unmounter")
 	}
-	if err := cleaner.TearDown(); err != nil {
+	if err := unmounter.TearDown(); err != nil {
 		t.Errorf("Expected success, got: %v", err)
 	}
 	if _, err := os.Stat(volumePath); err == nil {
@@ -317,21 +320,22 @@ func doTestPluginMountUnmount(t *testing.T, spec *volume.Spec, tmpDir string) {
 		t.Errorf("Can't find the plugin by name")
 	}
 	fake := &mount.FakeMounter{}
-	pod := &api.Pod{ObjectMeta: api.ObjectMeta{UID: types.UID("poduid")}}
-	builder, err := plugin.(*flexVolumePlugin).newBuilderInternal(spec, pod, &flexVolumeUtil{}, fake, exec.New(), "")
-	volumePath := builder.GetPath()
+	pod := &v1.Pod{ObjectMeta: v1.ObjectMeta{UID: types.UID("poduid")}}
+	// Use nil secret to test for nil secret case.
+	mounter, err := plugin.(*flexVolumePlugin).newMounterInternal(spec, pod, &flexVolumeUtil{}, fake, exec.New(), nil)
+	volumePath := mounter.GetPath()
 	if err != nil {
-		t.Errorf("Failed to make a new Builder: %v", err)
+		t.Errorf("Failed to make a new Mounter: %v", err)
 	}
-	if builder == nil {
-		t.Errorf("Got a nil Builder")
+	if mounter == nil {
+		t.Errorf("Got a nil Mounter")
 	}
-	path := builder.GetPath()
+	path := mounter.GetPath()
 	expectedPath := fmt.Sprintf("%s/pods/poduid/volumes/kubernetes.io~fakeMounter/vol1", tmpDir)
 	if path != expectedPath {
 		t.Errorf("Unexpected path, expected %q, got: %q", expectedPath, path)
 	}
-	if err := builder.SetUp(nil); err != nil {
+	if err := mounter.SetUp(nil); err != nil {
 		t.Errorf("Expected success, got: %v", err)
 	}
 	if _, err := os.Stat(volumePath); err != nil {
@@ -342,18 +346,18 @@ func doTestPluginMountUnmount(t *testing.T, spec *volume.Spec, tmpDir string) {
 		}
 	}
 	t.Logf("Setup successful")
-	if builder.(*flexVolumeBuilder).readOnly {
+	if mounter.(*flexVolumeMounter).readOnly {
 		t.Errorf("The volume source should not be read-only and it is.")
 	}
 
-	cleaner, err := plugin.(*flexVolumePlugin).newCleanerInternal("vol1", types.UID("poduid"), &flexVolumeUtil{}, fake, exec.New())
+	unmounter, err := plugin.(*flexVolumePlugin).newUnmounterInternal("vol1", types.UID("poduid"), &flexVolumeUtil{}, fake, exec.New())
 	if err != nil {
-		t.Errorf("Failed to make a new Cleaner: %v", err)
+		t.Errorf("Failed to make a new Unmounter: %v", err)
 	}
-	if cleaner == nil {
-		t.Errorf("Got a nil Cleaner")
+	if unmounter == nil {
+		t.Errorf("Got a nil Unmounter")
 	}
-	if err := cleaner.TearDown(); err != nil {
+	if err := unmounter.TearDown(); err != nil {
 		t.Errorf("Expected success, got: %v", err)
 	}
 	if _, err := os.Stat(volumePath); err == nil {
@@ -370,9 +374,9 @@ func TestPluginVolumeAttacher(t *testing.T) {
 	}
 	defer os.RemoveAll(tmpDir)
 
-	vol := &api.Volume{
+	vol := &v1.Volume{
 		Name:         "vol1",
-		VolumeSource: api.VolumeSource{FlexVolume: &api.FlexVolumeSource{Driver: "kubernetes.io/fakeAttacher", ReadOnly: false}},
+		VolumeSource: v1.VolumeSource{FlexVolume: &v1.FlexVolumeSource{Driver: "kubernetes.io/fakeAttacher", ReadOnly: false}},
 	}
 	doTestPluginAttachDetach(t, volume.NewSpecFromVolume(vol), tmpDir)
 }
@@ -384,9 +388,9 @@ func TestPluginVolumeMounter(t *testing.T) {
 	}
 	defer os.RemoveAll(tmpDir)
 
-	vol := &api.Volume{
+	vol := &v1.Volume{
 		Name:         "vol1",
-		VolumeSource: api.VolumeSource{FlexVolume: &api.FlexVolumeSource{Driver: "kubernetes.io/fakeMounter", ReadOnly: false}},
+		VolumeSource: v1.VolumeSource{FlexVolume: &v1.FlexVolumeSource{Driver: "kubernetes.io/fakeMounter", ReadOnly: false}},
 	}
 	doTestPluginMountUnmount(t, volume.NewSpecFromVolume(vol), tmpDir)
 }
@@ -398,13 +402,13 @@ func TestPluginPersistentVolume(t *testing.T) {
 	}
 	defer os.RemoveAll(tmpDir)
 
-	vol := &api.PersistentVolume{
-		ObjectMeta: api.ObjectMeta{
+	vol := &v1.PersistentVolume{
+		ObjectMeta: v1.ObjectMeta{
 			Name: "vol1",
 		},
-		Spec: api.PersistentVolumeSpec{
-			PersistentVolumeSource: api.PersistentVolumeSource{
-				FlexVolume: &api.FlexVolumeSource{Driver: "kubernetes.io/fakeAttacher", ReadOnly: false},
+		Spec: v1.PersistentVolumeSpec{
+			PersistentVolumeSource: v1.PersistentVolumeSource{
+				FlexVolume: &v1.FlexVolumeSource{Driver: "kubernetes.io/fakeAttacher", ReadOnly: false},
 			},
 		},
 	}

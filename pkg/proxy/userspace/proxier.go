@@ -1,5 +1,5 @@
 /*
-Copyright 2014 The Kubernetes Authors All rights reserved.
+Copyright 2014 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -26,14 +26,14 @@ import (
 	"time"
 
 	"github.com/golang/glog"
+	"k8s.io/apimachinery/pkg/types"
+	utilnet "k8s.io/apimachinery/pkg/util/net"
 	"k8s.io/kubernetes/pkg/api"
 	"k8s.io/kubernetes/pkg/proxy"
-	"k8s.io/kubernetes/pkg/types"
-	utilnet "k8s.io/kubernetes/pkg/util/net"
 
-	utilerrors "k8s.io/kubernetes/pkg/util/errors"
+	utilerrors "k8s.io/apimachinery/pkg/util/errors"
+	"k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/kubernetes/pkg/util/iptables"
-	"k8s.io/kubernetes/pkg/util/runtime"
 )
 
 type portal struct {
@@ -87,6 +87,7 @@ type Proxier struct {
 	mu             sync.Mutex // protects serviceMap
 	serviceMap     map[proxy.ServicePortName]*serviceInfo
 	syncPeriod     time.Duration
+	minSyncPeriod  time.Duration // unused atm, but plumbed through
 	udpIdleTimeout time.Duration
 	portMapMutex   sync.Mutex
 	portMap        map[portMapKey]*portMapValue
@@ -139,7 +140,7 @@ func IsProxyLocked(err error) bool {
 // if iptables fails to update or acquire the initial lock. Once a proxier is
 // created, it will keep iptables up to date in the background and will not
 // terminate if a particular iptables call fails.
-func NewProxier(loadBalancer LoadBalancer, listenIP net.IP, iptables iptables.Interface, pr utilnet.PortRange, syncPeriod, udpIdleTimeout time.Duration) (*Proxier, error) {
+func NewProxier(loadBalancer LoadBalancer, listenIP net.IP, iptables iptables.Interface, pr utilnet.PortRange, syncPeriod, minSyncPeriod, udpIdleTimeout time.Duration) (*Proxier, error) {
 	if listenIP.Equal(localhostIPv4) || listenIP.Equal(localhostIPv6) {
 		return nil, ErrProxyOnLocalhost
 	}
@@ -157,10 +158,10 @@ func NewProxier(loadBalancer LoadBalancer, listenIP net.IP, iptables iptables.In
 	proxyPorts := newPortAllocator(pr)
 
 	glog.V(2).Infof("Setting proxy IP to %v and initializing iptables", hostIP)
-	return createProxier(loadBalancer, listenIP, iptables, hostIP, proxyPorts, syncPeriod, udpIdleTimeout)
+	return createProxier(loadBalancer, listenIP, iptables, hostIP, proxyPorts, syncPeriod, minSyncPeriod, udpIdleTimeout)
 }
 
-func createProxier(loadBalancer LoadBalancer, listenIP net.IP, iptables iptables.Interface, hostIP net.IP, proxyPorts PortAllocator, syncPeriod, udpIdleTimeout time.Duration) (*Proxier, error) {
+func createProxier(loadBalancer LoadBalancer, listenIP net.IP, iptables iptables.Interface, hostIP net.IP, proxyPorts PortAllocator, syncPeriod, minSyncPeriod, udpIdleTimeout time.Duration) (*Proxier, error) {
 	// convenient to pass nil for tests..
 	if proxyPorts == nil {
 		proxyPorts = newPortAllocator(utilnet.PortRange{})
@@ -175,10 +176,12 @@ func createProxier(loadBalancer LoadBalancer, listenIP net.IP, iptables iptables
 		return nil, fmt.Errorf("failed to flush iptables: %v", err)
 	}
 	return &Proxier{
-		loadBalancer:   loadBalancer,
-		serviceMap:     make(map[proxy.ServicePortName]*serviceInfo),
-		portMap:        make(map[portMapKey]*portMapValue),
-		syncPeriod:     syncPeriod,
+		loadBalancer: loadBalancer,
+		serviceMap:   make(map[proxy.ServicePortName]*serviceInfo),
+		portMap:      make(map[portMapKey]*portMapValue),
+		syncPeriod:   syncPeriod,
+		// plumbed through if needed, not used atm.
+		minSyncPeriod:  minSyncPeriod,
 		udpIdleTimeout: udpIdleTimeout,
 		listenIP:       listenIP,
 		iptables:       iptables,
@@ -419,13 +422,13 @@ func (proxier *Proxier) OnServiceUpdate(services []api.Service) {
 				continue
 			}
 			info.portal.ip = serviceIP
-			info.portal.port = servicePort.Port
+			info.portal.port = int(servicePort.Port)
 			info.externalIPs = service.Spec.ExternalIPs
 			// Deep-copy in case the service instance changes
 			info.loadBalancerStatus = *api.LoadBalancerStatusDeepCopy(&service.Status.LoadBalancer)
-			info.nodePort = servicePort.NodePort
+			info.nodePort = int(servicePort.NodePort)
 			info.sessionAffinityType = service.Spec.SessionAffinity
-			glog.V(4).Infof("info: %+v", info)
+			glog.V(4).Infof("info: %#v", info)
 
 			err = proxier.openPortal(serviceName, info)
 			if err != nil {
@@ -447,12 +450,13 @@ func (proxier *Proxier) OnServiceUpdate(services []api.Service) {
 			if err != nil {
 				glog.Errorf("Failed to stop service %q: %v", name, err)
 			}
+			proxier.loadBalancer.DeleteService(name)
 		}
 	}
 }
 
 func sameConfig(info *serviceInfo, service *api.Service, port *api.ServicePort) bool {
-	if info.protocol != port.Protocol || info.portal.port != port.Port || info.nodePort != port.NodePort {
+	if info.protocol != port.Protocol || info.portal.port != int(port.Port) || info.nodePort != int(port.NodePort) {
 		return false
 	}
 	if !info.portal.ip.Equal(net.ParseIP(service.Spec.ClusterIP)) {
@@ -512,7 +516,7 @@ func (proxier *Proxier) openPortal(service proxy.ServicePortName, info *serviceI
 
 func (proxier *Proxier) openOnePortal(portal portal, protocol api.Protocol, proxyIP net.IP, proxyPort int, name proxy.ServicePortName) error {
 	if local, err := isLocalIP(portal.ip); err != nil {
-		return fmt.Errorf("can't determine if IP is local, assuming not: %v", err)
+		return fmt.Errorf("can't determine if IP %s is local, assuming not: %v", portal.ip, err)
 	} else if local {
 		err := proxier.claimNodePort(portal.ip, portal.port, protocol, name)
 		if err != nil {
@@ -690,7 +694,7 @@ func (proxier *Proxier) closeOnePortal(portal portal, protocol api.Protocol, pro
 	el := []error{}
 
 	if local, err := isLocalIP(portal.ip); err != nil {
-		el = append(el, fmt.Errorf("can't determine if IP is local, assuming not: %v", err))
+		el = append(el, fmt.Errorf("can't determine if IP %s is local, assuming not: %v", portal.ip, err))
 	} else if local {
 		if err := proxier.releaseNodePort(portal.ip, portal.port, protocol, name); err != nil {
 			el = append(el, err)

@@ -1,5 +1,5 @@
 /*
-Copyright 2014 The Kubernetes Authors All rights reserved.
+Copyright 2014 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -17,12 +17,14 @@ limitations under the License.
 package rest
 
 import (
+	"k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/util/validation/field"
+	genericapirequest "k8s.io/apiserver/pkg/request"
 	"k8s.io/kubernetes/pkg/api"
-	"k8s.io/kubernetes/pkg/api/errors"
-	"k8s.io/kubernetes/pkg/api/unversioned"
-	"k8s.io/kubernetes/pkg/api/validation"
-	"k8s.io/kubernetes/pkg/runtime"
-	"k8s.io/kubernetes/pkg/util/validation/field"
+	"k8s.io/kubernetes/pkg/api/validation/genericvalidation"
+	"k8s.io/kubernetes/pkg/api/validation/path"
 )
 
 // RESTCreateStrategy defines the minimum validation, accepted input, and
@@ -40,10 +42,10 @@ type RESTCreateStrategy interface {
 	// the object.  For example: remove fields that are not to be persisted,
 	// sort order-insensitive list fields, etc.  This should not remove fields
 	// whose presence would be considered a validation error.
-	PrepareForCreate(obj runtime.Object)
+	PrepareForCreate(ctx genericapirequest.Context, obj runtime.Object)
 	// Validate is invoked after default fields in the object have been filled in before
 	// the object is persisted.  This method should not mutate the object.
-	Validate(ctx api.Context, obj runtime.Object) field.ErrorList
+	Validate(ctx genericapirequest.Context, obj runtime.Object) field.ErrorList
 	// Canonicalize is invoked after validation has succeeded but before the
 	// object has been persisted.  This method may mutate the object.
 	Canonicalize(obj runtime.Object)
@@ -52,14 +54,14 @@ type RESTCreateStrategy interface {
 // BeforeCreate ensures that common operations for all resources are performed on creation. It only returns
 // errors that can be converted to api.Status. It invokes PrepareForCreate, then GenerateName, then Validate.
 // It returns nil if the object should be created.
-func BeforeCreate(strategy RESTCreateStrategy, ctx api.Context, obj runtime.Object) error {
+func BeforeCreate(strategy RESTCreateStrategy, ctx genericapirequest.Context, obj runtime.Object) error {
 	objectMeta, kind, kerr := objectMetaAndKind(strategy, obj)
 	if kerr != nil {
 		return kerr
 	}
 
 	if strategy.NamespaceScoped() {
-		if !api.ValidNamespace(ctx, objectMeta) {
+		if !ValidNamespace(ctx, objectMeta) {
 			return errors.NewBadRequest("the namespace of the provided object does not match the namespace sent on the request")
 		}
 	} else {
@@ -67,9 +69,12 @@ func BeforeCreate(strategy RESTCreateStrategy, ctx api.Context, obj runtime.Obje
 	}
 	objectMeta.DeletionTimestamp = nil
 	objectMeta.DeletionGracePeriodSeconds = nil
-	strategy.PrepareForCreate(obj)
-	api.FillObjectMetaSystemFields(ctx, objectMeta)
+	strategy.PrepareForCreate(ctx, obj)
+	FillObjectMetaSystemFields(ctx, objectMeta)
 	api.GenerateName(strategy, objectMeta)
+
+	// ClusterName is ignored and should not be saved
+	objectMeta.ClusterName = ""
 
 	if errs := strategy.Validate(ctx, obj); len(errs) > 0 {
 		return errors.NewInvalid(kind.GroupKind(), objectMeta.Name, errs)
@@ -78,7 +83,7 @@ func BeforeCreate(strategy RESTCreateStrategy, ctx api.Context, obj runtime.Obje
 	// Custom validation (including name validation) passed
 	// Now run common validation on object meta
 	// Do this *after* custom validation so that specific error messages are shown whenever possible
-	if errs := validation.ValidateObjectMeta(objectMeta, strategy.NamespaceScoped(), validation.ValidatePathSegmentName, field.NewPath("metadata")); len(errs) > 0 {
+	if errs := genericvalidation.ValidateObjectMeta(objectMeta, strategy.NamespaceScoped(), path.ValidatePathSegmentName, field.NewPath("metadata")); len(errs) > 0 {
 		return errors.NewInvalid(kind.GroupKind(), objectMeta.Name, errs)
 	}
 
@@ -107,16 +112,16 @@ func CheckGeneratedNameError(strategy RESTCreateStrategy, err error, obj runtime
 }
 
 // objectMetaAndKind retrieves kind and ObjectMeta from a runtime object, or returns an error.
-func objectMetaAndKind(typer runtime.ObjectTyper, obj runtime.Object) (*api.ObjectMeta, unversioned.GroupVersionKind, error) {
+func objectMetaAndKind(typer runtime.ObjectTyper, obj runtime.Object) (*api.ObjectMeta, schema.GroupVersionKind, error) {
 	objectMeta, err := api.ObjectMetaFor(obj)
 	if err != nil {
-		return nil, unversioned.GroupVersionKind{}, errors.NewInternalError(err)
+		return nil, schema.GroupVersionKind{}, errors.NewInternalError(err)
 	}
-	kind, err := typer.ObjectKind(obj)
+	kinds, _, err := typer.ObjectKinds(obj)
 	if err != nil {
-		return nil, unversioned.GroupVersionKind{}, errors.NewInternalError(err)
+		return nil, schema.GroupVersionKind{}, errors.NewInternalError(err)
 	}
-	return objectMeta, kind, nil
+	return objectMeta, kinds[0], nil
 }
 
 // NamespaceScopedStrategy has a method to tell if the object must be in a namespace.

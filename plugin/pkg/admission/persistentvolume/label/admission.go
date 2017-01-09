@@ -1,5 +1,5 @@
 /*
-Copyright 2015 The Kubernetes Authors All rights reserved.
+Copyright 2015 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -21,8 +21,7 @@ import (
 	"io"
 	"sync"
 
-	clientset "k8s.io/kubernetes/pkg/client/clientset_generated/internalclientset"
-
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/kubernetes/pkg/admission"
 	"k8s.io/kubernetes/pkg/api"
 	"k8s.io/kubernetes/pkg/cloudprovider"
@@ -32,7 +31,7 @@ import (
 )
 
 func init() {
-	admission.RegisterPlugin("PersistentVolumeLabel", func(client clientset.Interface, config io.Reader) (admission.Interface, error) {
+	admission.RegisterPlugin("PersistentVolumeLabel", func(config io.Reader) (admission.Interface, error) {
 		persistentVolumeLabelAdmission := NewPersistentVolumeLabel()
 		return persistentVolumeLabelAdmission, nil
 	})
@@ -59,7 +58,7 @@ func NewPersistentVolumeLabel() *persistentVolumeLabel {
 }
 
 func (l *persistentVolumeLabel) Admit(a admission.Attributes) (err error) {
-	if a.GetResource() != api.Resource("persistentvolumes") {
+	if a.GetResource().GroupResource() != api.Resource("persistentvolumes") {
 		return nil
 	}
 	obj := a.GetObject()
@@ -117,12 +116,13 @@ func (l *persistentVolumeLabel) findAWSEBSLabels(volume *api.PersistentVolume) (
 
 	// TODO: GetVolumeLabels is actually a method on the Volumes interface
 	// If that gets standardized we can refactor to reduce code duplication
-	labels, err := ebsVolumes.GetVolumeLabels(volume.Spec.AWSElasticBlockStore.VolumeID)
+	spec := aws.KubernetesVolumeID(volume.Spec.AWSElasticBlockStore.VolumeID)
+	labels, err := ebsVolumes.GetVolumeLabels(spec)
 	if err != nil {
 		return nil, err
 	}
 
-	return labels, err
+	return labels, nil
 }
 
 // getEBSVolumes returns the AWS Volumes interface for ebs
@@ -135,7 +135,7 @@ func (l *persistentVolumeLabel) getEBSVolumes() (aws.Volumes, error) {
 		if err != nil || cloudProvider == nil {
 			return nil, err
 		}
-		awsCloudProvider, ok := cloudProvider.(*aws.AWSCloud)
+		awsCloudProvider, ok := cloudProvider.(*aws.Cloud)
 		if !ok {
 			// GetCloudProvider has gone very wrong
 			return nil, fmt.Errorf("error retrieving AWS cloud provider")
@@ -159,12 +159,15 @@ func (l *persistentVolumeLabel) findGCEPDLabels(volume *api.PersistentVolume) (m
 		return nil, fmt.Errorf("unable to build GCE cloud provider for PD")
 	}
 
-	labels, err := provider.GetAutoLabelsForPD(volume.Spec.GCEPersistentDisk.PDName)
+	// If the zone is already labeled, honor the hint
+	zone := volume.Labels[metav1.LabelZoneFailureDomain]
+
+	labels, err := provider.GetAutoLabelsForPD(volume.Spec.GCEPersistentDisk.PDName, zone)
 	if err != nil {
 		return nil, err
 	}
 
-	return labels, err
+	return labels, nil
 }
 
 // getGCECloudProvider returns the GCE cloud provider, for use for querying volume labels

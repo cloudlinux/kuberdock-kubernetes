@@ -1,5 +1,5 @@
 /*
-Copyright 2015 The Kubernetes Authors All rights reserved.
+Copyright 2015 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -17,17 +17,38 @@ limitations under the License.
 package v1beta1
 
 import (
-	"k8s.io/kubernetes/pkg/api/unversioned"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	api "k8s.io/kubernetes/pkg/apis/abac"
 )
 
-// GroupVersion is the API group and version for abac v1beta1
-var GroupVersion = unversioned.GroupVersion{Group: api.Group, Version: "v1beta1"}
+const GroupName = "abac.authorization.kubernetes.io"
+
+// SchemeGroupVersion is the API group and version for abac v1beta1
+var SchemeGroupVersion = schema.GroupVersion{Group: GroupName, Version: "v1beta1"}
 
 func init() {
-	api.Scheme.AddKnownTypes(GroupVersion,
-		&Policy{},
-	)
+	// TODO: delete this, abac should not have its own scheme.
+	if err := addKnownTypes(api.Scheme); err != nil {
+		// Programmer error.
+		panic(err)
+	}
+	if err := addConversionFuncs(api.Scheme); err != nil {
+		// Programmer error.
+		panic(err)
+	}
 }
 
-func (obj *Policy) GetObjectKind() unversioned.ObjectKind { return &obj.TypeMeta }
+var (
+	SchemeBuilder = runtime.NewSchemeBuilder(addKnownTypes, addConversionFuncs)
+	AddToScheme   = SchemeBuilder.AddToScheme
+)
+
+func addKnownTypes(scheme *runtime.Scheme) error {
+	scheme.AddKnownTypes(SchemeGroupVersion,
+		&Policy{},
+	)
+	return nil
+}
+
+func (obj *Policy) GetObjectKind() schema.ObjectKind { return &obj.TypeMeta }

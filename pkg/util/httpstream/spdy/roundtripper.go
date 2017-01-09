@@ -1,5 +1,5 @@
 /*
-Copyright 2015 The Kubernetes Authors All rights reserved.
+Copyright 2015 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -28,11 +28,11 @@ import (
 	"net/url"
 	"strings"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/kubernetes/pkg/api"
-	apierrors "k8s.io/kubernetes/pkg/api/errors"
-	"k8s.io/kubernetes/pkg/api/unversioned"
 	"k8s.io/kubernetes/pkg/util/httpstream"
-	"k8s.io/kubernetes/third_party/golang/netutil"
+	"k8s.io/kubernetes/third_party/forked/golang/netutil"
 )
 
 // SpdyRoundTripper knows how to upgrade an HTTP request to one that supports
@@ -70,6 +70,11 @@ func NewRoundTripper(tlsConfig *tls.Config) httpstream.UpgradeRoundTripper {
 // the specified tlsConfig. This function is mostly meant for unit tests.
 func NewSpdyRoundTripper(tlsConfig *tls.Config) *SpdyRoundTripper {
 	return &SpdyRoundTripper{tlsConfig: tlsConfig}
+}
+
+// implements pkg/util/net.TLSClientConfigHolder for proper TLS checking during proxying with a spdy roundtripper
+func (s *SpdyRoundTripper) TLSClientConfig() *tls.Config {
+	return s.tlsConfig
 }
 
 // dial dials the host specified by req, using TLS if appropriate, optionally
@@ -123,6 +128,10 @@ func (s *SpdyRoundTripper) dial(req *http.Request) (net.Conn, error) {
 	host, _, err := net.SplitHostPort(targetHost)
 	if err != nil {
 		return nil, err
+	}
+
+	if s.tlsConfig == nil {
+		s.tlsConfig = &tls.Config{}
 	}
 
 	if len(s.tlsConfig.ServerName) == 0 {
@@ -242,8 +251,8 @@ func (s *SpdyRoundTripper) NewConnection(resp *http.Response) (httpstream.Connec
 			responseError = "unable to read error from server response"
 		} else {
 			// TODO: I don't belong here, I should be abstracted from this class
-			if obj, _, err := api.Codecs.UniversalDecoder().Decode(responseErrorBytes, nil, &unversioned.Status{}); err == nil {
-				if status, ok := obj.(*unversioned.Status); ok {
+			if obj, _, err := api.Codecs.UniversalDecoder().Decode(responseErrorBytes, nil, &metav1.Status{}); err == nil {
+				if status, ok := obj.(*metav1.Status); ok {
 					return nil, &apierrors.StatusError{ErrStatus: *status}
 				}
 			}
