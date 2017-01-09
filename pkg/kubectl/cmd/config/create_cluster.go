@@ -1,5 +1,5 @@
 /*
-Copyright 2014 The Kubernetes Authors All rights reserved.
+Copyright 2014 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -27,37 +27,43 @@ import (
 
 	"k8s.io/kubernetes/pkg/client/unversioned/clientcmd"
 	clientcmdapi "k8s.io/kubernetes/pkg/client/unversioned/clientcmd/api"
-	"k8s.io/kubernetes/pkg/util"
+	"k8s.io/kubernetes/pkg/kubectl/cmd/templates"
+	cmdutil "k8s.io/kubernetes/pkg/kubectl/cmd/util"
+	"k8s.io/kubernetes/pkg/util/flag"
 )
 
 type createClusterOptions struct {
-	configAccess          ConfigAccess
+	configAccess          clientcmd.ConfigAccess
 	name                  string
-	server                util.StringFlag
-	apiVersion            util.StringFlag
-	insecureSkipTLSVerify util.BoolFlag
-	certificateAuthority  util.StringFlag
-	embedCAData           util.BoolFlag
+	server                flag.StringFlag
+	apiVersion            flag.StringFlag
+	insecureSkipTLSVerify flag.Tristate
+	certificateAuthority  flag.StringFlag
+	embedCAData           flag.Tristate
 }
 
-const (
-	create_cluster_long = `Sets a cluster entry in kubeconfig.
-Specifying a name that already exists will merge new fields on top of existing values for those fields.`
-	create_cluster_example = `# Set only the server field on the e2e cluster entry without touching other values.
-kubectl config set-cluster e2e --server=https://1.2.3.4
+var (
+	create_cluster_long = templates.LongDesc(`
+		Sets a cluster entry in kubeconfig.
 
-# Embed certificate authority data for the e2e cluster entry
-kubectl config set-cluster e2e --certificate-authority=~/.kube/e2e/kubernetes.ca.crt
+		Specifying a name that already exists will merge new fields on top of existing values for those fields.`)
 
-# Disable cert checking for the dev cluster entry
-kubectl config set-cluster e2e --insecure-skip-tls-verify=true`
+	create_cluster_example = templates.Examples(`
+		# Set only the server field on the e2e cluster entry without touching other values.
+		kubectl config set-cluster e2e --server=https://1.2.3.4
+
+		# Embed certificate authority data for the e2e cluster entry
+		kubectl config set-cluster e2e --certificate-authority=~/.kube/e2e/kubernetes.ca.crt
+
+		# Disable cert checking for the dev cluster entry
+		kubectl config set-cluster e2e --insecure-skip-tls-verify=true`)
 )
 
-func NewCmdConfigSetCluster(out io.Writer, configAccess ConfigAccess) *cobra.Command {
+func NewCmdConfigSetCluster(out io.Writer, configAccess clientcmd.ConfigAccess) *cobra.Command {
 	options := &createClusterOptions{configAccess: configAccess}
 
 	cmd := &cobra.Command{
-		Use:     fmt.Sprintf("set-cluster NAME [--%v=server] [--%v=path/to/certficate/authority] [--%v=true]", clientcmd.FlagAPIServer, clientcmd.FlagCAFile, clientcmd.FlagInsecure),
+		Use:     fmt.Sprintf("set-cluster NAME [--%v=server] [--%v=path/to/certificate/authority] [--%v=true]", clientcmd.FlagAPIServer, clientcmd.FlagCAFile, clientcmd.FlagInsecure),
 		Short:   "Sets a cluster entry in kubeconfig",
 		Long:    create_cluster_long,
 		Example: create_cluster_example,
@@ -66,12 +72,8 @@ func NewCmdConfigSetCluster(out io.Writer, configAccess ConfigAccess) *cobra.Com
 				return
 			}
 
-			err := options.run()
-			if err != nil {
-				fmt.Fprintf(out, "%v\n", err)
-			} else {
-				fmt.Fprintf(out, "cluster %q set.\n", options.name)
-			}
+			cmdutil.CheckErr(options.run())
+			fmt.Fprintf(out, "Cluster %q set.\n", options.name)
 		},
 	}
 
@@ -81,7 +83,8 @@ func NewCmdConfigSetCluster(out io.Writer, configAccess ConfigAccess) *cobra.Com
 	cmd.Flags().Var(&options.apiVersion, clientcmd.FlagAPIVersion, clientcmd.FlagAPIVersion+" for the cluster entry in kubeconfig")
 	f := cmd.Flags().VarPF(&options.insecureSkipTLSVerify, clientcmd.FlagInsecure, "", clientcmd.FlagInsecure+" for the cluster entry in kubeconfig")
 	f.NoOptDefVal = "true"
-	cmd.Flags().Var(&options.certificateAuthority, clientcmd.FlagCAFile, "path to "+clientcmd.FlagCAFile+" for the cluster entry in kubeconfig")
+	cmd.Flags().Var(&options.certificateAuthority, clientcmd.FlagCAFile, "path to "+clientcmd.FlagCAFile+" file for the cluster entry in kubeconfig")
+	cmd.MarkFlagFilename(clientcmd.FlagCAFile)
 	f = cmd.Flags().VarPF(&options.embedCAData, clientcmd.FlagEmbedCerts, "", clientcmd.FlagEmbedCerts+" for the cluster entry in kubeconfig")
 	f.NoOptDefVal = "true"
 
@@ -106,7 +109,7 @@ func (o createClusterOptions) run() error {
 	cluster := o.modifyCluster(*startingStanza)
 	config.Clusters[o.name] = &cluster
 
-	if err := ModifyConfig(o.configAccess, *config, true); err != nil {
+	if err := clientcmd.ModifyConfig(o.configAccess, *config, true); err != nil {
 		return err
 	}
 

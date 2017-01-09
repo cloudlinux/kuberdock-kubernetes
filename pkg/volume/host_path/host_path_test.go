@@ -1,7 +1,7 @@
 // +build linux
 
 /*
-Copyright 2014 The Kubernetes Authors All rights reserved.
+Copyright 2014 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -28,6 +28,7 @@ import (
 	"k8s.io/kubernetes/pkg/client/clientset_generated/internalclientset/fake"
 	"k8s.io/kubernetes/pkg/types"
 	"k8s.io/kubernetes/pkg/util"
+	"k8s.io/kubernetes/pkg/util/uuid"
 	"k8s.io/kubernetes/pkg/volume"
 	volumetest "k8s.io/kubernetes/pkg/volume/testing"
 )
@@ -40,8 +41,8 @@ func TestCanSupport(t *testing.T) {
 	if err != nil {
 		t.Errorf("Can't find the plugin by name")
 	}
-	if plug.Name() != "kubernetes.io/host-path" {
-		t.Errorf("Wrong name: %s", plug.Name())
+	if plug.GetPluginName() != "kubernetes.io/host-path" {
+		t.Errorf("Wrong name: %s", plug.GetPluginName())
 	}
 	if !plug.CanSupport(&volume.Spec{Volume: &api.Volume{VolumeSource: api.VolumeSource{HostPath: &api.HostPathVolumeSource{}}}}) {
 		t.Errorf("Expected true")
@@ -70,28 +71,25 @@ func TestGetAccessModes(t *testing.T) {
 func TestRecycler(t *testing.T) {
 	plugMgr := volume.VolumePluginMgr{}
 	pluginHost := volumetest.NewFakeVolumeHost("/tmp/fake", nil, nil)
-	plugMgr.InitPlugins([]volume.VolumePlugin{&hostPathPlugin{nil, volumetest.NewFakeRecycler, nil, nil, volume.VolumeConfig{}}}, pluginHost)
+	plugMgr.InitPlugins([]volume.VolumePlugin{&hostPathPlugin{nil, volume.VolumeConfig{}}}, pluginHost)
 
 	spec := &volume.Spec{PersistentVolume: &api.PersistentVolume{Spec: api.PersistentVolumeSpec{PersistentVolumeSource: api.PersistentVolumeSource{HostPath: &api.HostPathVolumeSource{Path: "/foo"}}}}}
 	plug, err := plugMgr.FindRecyclablePluginBySpec(spec)
 	if err != nil {
 		t.Errorf("Can't find the plugin by name")
 	}
-	recycler, err := plug.NewRecycler(spec)
+	recycler, err := plug.NewRecycler("pv-name", spec, nil)
 	if err != nil {
-		t.Errorf("Failed to make a new Recyler: %v", err)
+		t.Errorf("Failed to make a new Recycler: %v", err)
 	}
 	if recycler.GetPath() != spec.PersistentVolume.Spec.HostPath.Path {
 		t.Errorf("Expected %s but got %s", spec.PersistentVolume.Spec.HostPath.Path, recycler.GetPath())
-	}
-	if err := recycler.Recycle(); err != nil {
-		t.Errorf("Mock Recycler expected to return nil but got %s", err)
 	}
 }
 
 func TestDeleter(t *testing.T) {
 	// Deleter has a hard-coded regex for "/tmp".
-	tempPath := fmt.Sprintf("/tmp/hostpath/%s", util.NewUUID())
+	tempPath := fmt.Sprintf("/tmp/hostpath/%s", uuid.NewUUID())
 	defer os.RemoveAll(tempPath)
 	err := os.MkdirAll(tempPath, 0750)
 	if err != nil {
@@ -148,22 +146,27 @@ func TestDeleterTempDir(t *testing.T) {
 }
 
 func TestProvisioner(t *testing.T) {
-	tempPath := fmt.Sprintf("/tmp/hostpath/%s", util.NewUUID())
+	tempPath := fmt.Sprintf("/tmp/hostpath/%s", uuid.NewUUID())
 	defer os.RemoveAll(tempPath)
 	err := os.MkdirAll(tempPath, 0750)
 
 	plugMgr := volume.VolumePluginMgr{}
-	plugMgr.InitPlugins(ProbeVolumePlugins(volume.VolumeConfig{}), volumetest.NewFakeVolumeHost("/tmp/fake", nil, nil))
+	plugMgr.InitPlugins(ProbeVolumePlugins(volume.VolumeConfig{ProvisioningEnabled: true}),
+		volumetest.NewFakeVolumeHost("/tmp/fake", nil, nil))
 	spec := &volume.Spec{PersistentVolume: &api.PersistentVolume{Spec: api.PersistentVolumeSpec{PersistentVolumeSource: api.PersistentVolumeSource{HostPath: &api.HostPathVolumeSource{Path: tempPath}}}}}
 	plug, err := plugMgr.FindCreatablePluginBySpec(spec)
 	if err != nil {
 		t.Errorf("Can't find the plugin by name")
 	}
-	creater, err := plug.NewProvisioner(volume.VolumeOptions{Capacity: resource.MustParse("1Gi"), PersistentVolumeReclaimPolicy: api.PersistentVolumeReclaimDelete})
+	options := volume.VolumeOptions{
+		PVC: volumetest.CreateTestPVC("1Gi", []api.PersistentVolumeAccessMode{api.ReadWriteOnce}),
+		PersistentVolumeReclaimPolicy: api.PersistentVolumeReclaimDelete,
+	}
+	creater, err := plug.NewProvisioner(options)
 	if err != nil {
 		t.Errorf("Failed to make a new Provisioner: %v", err)
 	}
-	pv, err := creater.NewPersistentVolumeTemplate()
+	pv, err := creater.Provision()
 	if err != nil {
 		t.Errorf("Unexpected error creating volume: %v", err)
 	}
@@ -198,32 +201,32 @@ func TestPlugin(t *testing.T) {
 		VolumeSource: api.VolumeSource{HostPath: &api.HostPathVolumeSource{Path: "/vol1"}},
 	}
 	pod := &api.Pod{ObjectMeta: api.ObjectMeta{UID: types.UID("poduid")}}
-	builder, err := plug.NewBuilder(volume.NewSpecFromVolume(spec), pod, volume.VolumeOptions{})
+	mounter, err := plug.NewMounter(volume.NewSpecFromVolume(spec), pod, volume.VolumeOptions{})
 	if err != nil {
-		t.Errorf("Failed to make a new Builder: %v", err)
+		t.Errorf("Failed to make a new Mounter: %v", err)
 	}
-	if builder == nil {
-		t.Errorf("Got a nil Builder")
+	if mounter == nil {
+		t.Errorf("Got a nil Mounter")
 	}
 
-	path := builder.GetPath()
+	path := mounter.GetPath()
 	if path != "/vol1" {
 		t.Errorf("Got unexpected path: %s", path)
 	}
 
-	if err := builder.SetUp(nil); err != nil {
+	if err := mounter.SetUp(nil); err != nil {
 		t.Errorf("Expected success, got: %v", err)
 	}
 
-	cleaner, err := plug.NewCleaner("vol1", types.UID("poduid"))
+	unmounter, err := plug.NewUnmounter("vol1", types.UID("poduid"))
 	if err != nil {
-		t.Errorf("Failed to make a new Cleaner: %v", err)
+		t.Errorf("Failed to make a new Unmounter: %v", err)
 	}
-	if cleaner == nil {
-		t.Errorf("Got a nil Cleaner")
+	if unmounter == nil {
+		t.Errorf("Got a nil Unmounter")
 	}
 
-	if err := cleaner.TearDown(); err != nil {
+	if err := unmounter.TearDown(); err != nil {
 		t.Errorf("Expected success, got: %v", err)
 	}
 }
@@ -262,12 +265,12 @@ func TestPersistentClaimReadOnlyFlag(t *testing.T) {
 	plugMgr.InitPlugins(ProbeVolumePlugins(volume.VolumeConfig{}), volumetest.NewFakeVolumeHost("/tmp/fake", client, nil))
 	plug, _ := plugMgr.FindPluginByName(hostPathPluginName)
 
-	// readOnly bool is supplied by persistent-claim volume source when its builder creates other volumes
+	// readOnly bool is supplied by persistent-claim volume source when its mounter creates other volumes
 	spec := volume.NewSpecFromPersistentVolume(pv, true)
 	pod := &api.Pod{ObjectMeta: api.ObjectMeta{UID: types.UID("poduid")}}
-	builder, _ := plug.NewBuilder(spec, pod, volume.VolumeOptions{})
+	mounter, _ := plug.NewMounter(spec, pod, volume.VolumeOptions{})
 
-	if !builder.GetAttributes().ReadOnly {
-		t.Errorf("Expected true for builder.IsReadOnly")
+	if !mounter.GetAttributes().ReadOnly {
+		t.Errorf("Expected true for mounter.IsReadOnly")
 	}
 }

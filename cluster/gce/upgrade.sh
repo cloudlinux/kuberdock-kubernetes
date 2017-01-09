@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Copyright 2015 The Kubernetes Authors All rights reserved.
+# Copyright 2015 The Kubernetes Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -28,18 +28,18 @@ if [[ "${KUBERNETES_PROVIDER:-gce}" != "gce" ]]; then
 fi
 
 KUBE_ROOT=$(dirname "${BASH_SOURCE}")/../..
-source "${KUBE_ROOT}/cluster/kube-env.sh"
 source "${KUBE_ROOT}/cluster/kube-util.sh"
 
 function usage() {
   echo "!!! EXPERIMENTAL !!!"
   echo ""
-  echo "${0} [-M|-N|-P] -l | <version number or publication>"
+  echo "${0} [-M | -N | -P] [-o] (-l | <version number or publication>)"
   echo "  Upgrades master and nodes by default"
   echo "  -M:  Upgrade master only"
   echo "  -N:  Upgrade nodes only"
   echo "  -P:  Node upgrade prerequisites only (create a new instance template)"
-  echo "  -l:  Use local(dev) binaries"
+  echo "  -o:  Use os distro sepcified in KUBE_NODE_OS_DISTRIBUTION for new nodes. Options include 'debian' or 'gci'"
+  echo "  -l:  Use local(dev) binaries. This is only supported for master upgrades."
   echo ""
   echo '  Version number or publication is either a proper version number'
   echo '  (e.g. "v1.0.6", "v1.2.0-alpha.1.881+376438b69c7612") or a version'
@@ -60,7 +60,7 @@ function usage() {
 
   release_stable=$(gsutil cat gs://kubernetes-release/release/stable.txt)
   release_latest=$(gsutil cat gs://kubernetes-release/release/latest.txt)
-  ci_latest=$(gsutil cat gs://kubernetes-release/ci/latest.txt)
+  ci_latest=$(gsutil cat gs://kubernetes-release-dev/ci/latest.txt)
 
   echo "Right now, versions are as follows:"
   echo "  release/stable: ${0} ${release_stable}"
@@ -68,13 +68,26 @@ function usage() {
   echo "  ci/latest:      ${0} ${ci_latest}"
 }
 
+function print-node-version-info() {
+  echo "== $1 Node OS and Kubelet Versions =="
+  "${KUBE_ROOT}/cluster/kubectl.sh" get nodes -o=jsonpath='{range .items[*]}name: "{.metadata.name}", osImage: "{.status.nodeInfo.osImage}", kubeletVersion: "{.status.nodeInfo.kubeletVersion}"{"\n"}{end}'
+}
+
 function upgrade-master() {
   echo "== Upgrading master to '${SERVER_BINARY_TAR_URL}'. Do not interrupt, deleting master instance. =="
 
+  # Tries to figure out KUBE_USER/KUBE_PASSWORD by first looking under
+  # kubeconfig:username, and then under kubeconfig:username-basic-auth.
+  # TODO: KUBE_USER is used in generating ABAC policy which the
+  # apiserver may not have enabled. If it's enabled, we must have a user
+  # to generate a valid ABAC policy. If the username changes, should
+  # the script fail? Should we generate a default username and password
+  # if the section is missing in kubeconfig? Handle this better in 1.5.
   get-kubeconfig-basicauth
   get-kubeconfig-bearertoken
 
   detect-master
+  parse-master-env
 
   # Delete the master instance. Note that the master-pd is created
   # with auto-delete=no, so it should not be deleted.
@@ -117,9 +130,10 @@ function wait-for-master() {
 function prepare-upgrade() {
   ensure-temp-dir
   detect-project
+  detect-node-names # sets INSTANCE_GROUPS
+  write-cluster-name
   tars_from_version
 }
-
 
 # Reads kube-env metadata from first node in NODE_NAMES.
 #
@@ -134,13 +148,18 @@ function get-node-env() {
       'http://metadata/computeMetadata/v1/instance/attributes/kube-env'" 2>/dev/null
 }
 
-# Using provided node env, extracts value from provided key.
+# Read os distro information from /os/release on node.
+# $1: The name of node
 #
-# Args:
-# $1 node env (kube-env of node; result of calling get-node-env)
-# $2 env key to use
-function get-env-val() {
-  echo "${1}" | grep ${2} | cut -d : -f 2 | cut -d \' -f 2
+# Assumed vars:
+#   PROJECT
+#   ZONE
+function get-node-os() {
+  gcloud compute ssh "$1" \
+    --project "${PROJECT}" \
+    --zone "${ZONE}" \
+    --command \
+    "cat /etc/os-release | grep \"^ID=.*\" | cut -c 4-"
 }
 
 # Assumed vars:
@@ -160,6 +179,16 @@ function get-env-val() {
 function upgrade-nodes() {
   prepare-node-upgrade
   do-node-upgrade
+}
+
+function setup-base-image() {
+  if [[ "${env_os_distro}" == "false" ]]; then
+    echo "== Ensuring that new Node base OS image matched the existing Node base OS image"
+    NODE_OS_DISTRIBUTION=$(get-node-os "${NODE_NAMES[0]}")
+    source "${KUBE_ROOT}/cluster/gce/${NODE_OS_DISTRIBUTION}/node-helper.sh"
+    # Reset the node image based on current os distro
+    set-node-image
+fi
 }
 
 # prepare-node-upgrade creates a new instance template suitable for upgrading
@@ -183,9 +212,9 @@ function upgrade-nodes() {
 #   KUBELET_KEY_BASE64
 function prepare-node-upgrade() {
   echo "== Preparing node upgrade (to ${KUBE_VERSION}). ==" >&2
-  SANITIZED_VERSION=$(echo ${KUBE_VERSION} | sed 's/[\.\+]/-/g')
+  setup-base-image
 
-  detect-node-names # sets INSTANCE_GROUPS
+  SANITIZED_VERSION=$(echo ${KUBE_VERSION} | sed 's/[\.\+]/-/g')
 
   # TODO(zmerlynn): Refactor setting scope flags.
   local scope_flags=
@@ -213,7 +242,7 @@ function prepare-node-upgrade() {
   local template_name=$(get-template-name-from-version ${SANITIZED_VERSION})
   create-node-instance-template "${template_name}"
   # The following is echo'd so that callers can get the template name.
-  echo $template_name
+  echo "Instance template name: ${template_name}"
   echo "== Finished preparing node upgrade (to ${KUBE_VERSION}). ==" >&2
 }
 
@@ -225,8 +254,16 @@ function do-node-upgrade() {
   # NOTE(zmerlynn): If you are changing this gcloud command, update
   #                 test/e2e/cluster_upgrade.go to match this EXACTLY.
   local template_name=$(get-template-name-from-version ${SANITIZED_VERSION})
+  local old_templates=()
+  local updates=()
   for group in ${INSTANCE_GROUPS[@]}; do
-    gcloud alpha compute rolling-updates \
+    old_templates+=($(gcloud compute instance-groups managed list \
+        --project="${PROJECT}" \
+        --zones="${ZONE}" \
+        --regexp="${group}" \
+        --format='value(instanceTemplate)' || true))
+    echo "== Calling rolling-update for ${group}. ==" >&2
+    update=$(gcloud alpha compute rolling-updates \
         --project="${PROJECT}" \
         --zone="${ZONE}" \
         start \
@@ -235,10 +272,52 @@ function do-node-upgrade() {
         --instance-startup-timeout=300s \
         --max-num-concurrent-instances=1 \
         --max-num-failed-instances=0 \
-        --min-instance-update-time=0s
+        --min-instance-update-time=0s 2>&1) && update_rc=$? || update_rc=$?
+
+    if [[ "${update_rc}" != 0 ]]; then
+      echo "== FAILED to start rolling-update: =="
+      echo "${update}"
+      echo "  This may be due to a preexisting rolling-update;"
+      echo "  see https://github.com/kubernetes/kubernetes/issues/33113 for details."
+      echo "  All rolling-updates in project ${PROJECT} zone ${ZONE}:"
+      gcloud alpha compute rolling-updates \
+        --project="${PROJECT}" \
+        --zone="${ZONE}" \
+        list || true
+      return ${update_rc}
+    fi
+
+    id=$(echo "${update}" | grep "Started" | cut -d '/' -f 11 | cut -d ']' -f 1)
+    updates+=("${id}")
   done
 
-  # TODO(zmerlynn): Wait for the rolling-update to finish.
+  echo "== Waiting for Upgrading nodes to be finished. ==" >&2
+  # Wait until rolling updates are finished.
+  for update in ${updates[@]}; do
+    while true; do
+      result=$(gcloud alpha compute rolling-updates \
+          --project="${PROJECT}" \
+          --zone="${ZONE}" \
+          describe \
+          ${update} \
+          --format='value(status)' || true)
+      if [ $result = "ROLLED_OUT" ]; then
+        echo "Rolling update ${update} is ${result} state and finished."
+        break
+      fi
+      echo "Rolling update ${update} is still in ${result} state."
+      sleep 10
+    done
+  done
+
+  # Remove the old templates.
+  echo "== Deleting old templates in ${PROJECT}. ==" >&2
+  for tmpl in ${old_templates[@]}; do
+    gcloud compute instance-templates delete \
+        --quiet \
+        --project="${PROJECT}" \
+        "${tmpl}" || true
+  done
 
   echo "== Finished upgrading nodes to ${KUBE_VERSION}. ==" >&2
 }
@@ -247,8 +326,9 @@ master_upgrade=true
 node_upgrade=true
 node_prereqs=false
 local_binaries=false
+env_os_distro=false
 
-while getopts ":MNPlh" opt; do
+while getopts ":MNPlho" opt; do
   case ${opt} in
     M)
       node_upgrade=false
@@ -261,6 +341,9 @@ while getopts ":MNPlh" opt; do
       ;;
     l)
       local_binaries=true
+      ;;
+    o)
+      env_os_distro=true
       ;;
     h)
       usage
@@ -275,6 +358,12 @@ while getopts ":MNPlh" opt; do
 done
 shift $((OPTIND-1))
 
+if [[ $# -gt 1 ]]; then
+  echo "Error: Only one parameter (<version number or publication>) may be passed after the set of flags!" >&2
+  usage
+  exit 1
+fi
+
 if [[ $# -lt 1 ]] && [[ "${local_binaries}" == "false" ]]; then
   usage
   exit 1
@@ -284,6 +373,8 @@ if [[ "${master_upgrade}" == "false" ]] && [[ "${node_upgrade}" == "false" ]]; t
   echo "Can't specify both -M and -N" >&2
   exit 1
 fi
+
+print-node-version-info "Pre-Upgrade"
 
 if [[ "${local_binaries}" == "false" ]]; then
   set_binary_version ${1}
@@ -311,3 +402,5 @@ fi
 
 echo "== Validating cluster post-upgrade =="
 "${KUBE_ROOT}/cluster/validate-cluster.sh"
+
+print-node-version-info "Post-Upgrade"

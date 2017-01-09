@@ -1,7 +1,7 @@
 // +build linux
 
 /*
-Copyright 2014 The Kubernetes Authors All rights reserved.
+Copyright 2014 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -52,8 +52,8 @@ func TestCanSupport(t *testing.T) {
 	defer os.RemoveAll(tmpDir)
 	plug := makePluginUnderTest(t, "kubernetes.io/empty-dir", tmpDir)
 
-	if plug.Name() != "kubernetes.io/empty-dir" {
-		t.Errorf("Wrong name: %s", plug.Name())
+	if plug.GetPluginName() != "kubernetes.io/empty-dir" {
+		t.Errorf("Wrong name: %s", plug.GetPluginName())
 	}
 	if !plug.CanSupport(&volume.Spec{Volume: &api.Volume{VolumeSource: api.VolumeSource{EmptyDir: &api.EmptyDirVolumeSource{}}}}) {
 		t.Errorf("Expected true")
@@ -75,44 +75,13 @@ func (fake *fakeMountDetector) GetMountMedium(path string) (storageMedium, bool,
 func TestPluginEmptyRootContext(t *testing.T) {
 	doTestPlugin(t, pluginTestConfig{
 		medium:                 api.StorageMediumDefault,
-		rootContext:            "",
 		expectedSetupMounts:    0,
 		expectedTeardownMounts: 0})
-}
-
-func TestPluginRootContextSet(t *testing.T) {
-	if !selinuxEnabled() {
-		return
-	}
-
-	doTestPlugin(t, pluginTestConfig{
-		medium:                 api.StorageMediumDefault,
-		rootContext:            "user:role:type:range",
-		expectedSELinux:        "user:role:type:range",
-		expectedSetupMounts:    0,
-		expectedTeardownMounts: 0})
-}
-
-func TestPluginTmpfs(t *testing.T) {
-	if !selinuxEnabled() {
-		return
-	}
-
-	doTestPlugin(t, pluginTestConfig{
-		medium:                        api.StorageMediumMemory,
-		rootContext:                   "user:role:type:range",
-		expectedSELinux:               "user:role:type:range",
-		expectedSetupMounts:           1,
-		shouldBeMountedBeforeTeardown: true,
-		expectedTeardownMounts:        1})
 }
 
 type pluginTestConfig struct {
 	medium                        api.StorageMedium
-	rootContext                   string
-	SELinuxOptions                *api.SELinuxOptions
 	idempotent                    bool
-	expectedSELinux               string
 	expectedSetupMounts           int
 	shouldBeMountedBeforeTeardown bool
 	expectedTeardownMounts        int
@@ -137,31 +106,13 @@ func doTestPlugin(t *testing.T, config pluginTestConfig) {
 			VolumeSource: api.VolumeSource{EmptyDir: &api.EmptyDirVolumeSource{Medium: config.medium}},
 		}
 
-		mounter       = mount.FakeMounter{}
-		mountDetector = fakeMountDetector{}
-		pod           = &api.Pod{ObjectMeta: api.ObjectMeta{UID: types.UID("poduid")}}
+		physicalMounter = mount.FakeMounter{}
+		mountDetector   = fakeMountDetector{}
+		pod             = &api.Pod{ObjectMeta: api.ObjectMeta{UID: types.UID("poduid")}}
 	)
 
-	// Set up the SELinux options on the pod
-	if config.SELinuxOptions != nil {
-		pod.Spec = api.PodSpec{
-			Containers: []api.Container{
-				{
-					SecurityContext: &api.SecurityContext{
-						SELinuxOptions: config.SELinuxOptions,
-					},
-					VolumeMounts: []api.VolumeMount{
-						{
-							Name: volumeName,
-						},
-					},
-				},
-			},
-		}
-	}
-
 	if config.idempotent {
-		mounter.MountPoints = []mount.MountPoint{
+		physicalMounter.MountPoints = []mount.MountPoint{
 			{
 				Path: volumePath,
 			},
@@ -169,24 +120,24 @@ func doTestPlugin(t *testing.T, config pluginTestConfig) {
 		util.SetReady(metadataDir)
 	}
 
-	builder, err := plug.(*emptyDirPlugin).newBuilderInternal(volume.NewSpecFromVolume(spec),
+	mounter, err := plug.(*emptyDirPlugin).newMounterInternal(volume.NewSpecFromVolume(spec),
 		pod,
-		&mounter,
+		&physicalMounter,
 		&mountDetector,
-		volume.VolumeOptions{RootContext: config.rootContext})
+		volume.VolumeOptions{})
 	if err != nil {
-		t.Errorf("Failed to make a new Builder: %v", err)
+		t.Errorf("Failed to make a new Mounter: %v", err)
 	}
-	if builder == nil {
-		t.Errorf("Got a nil Builder")
+	if mounter == nil {
+		t.Errorf("Got a nil Mounter")
 	}
 
-	volPath := builder.GetPath()
+	volPath := mounter.GetPath()
 	if volPath != volumePath {
 		t.Errorf("Got unexpected path: %s", volPath)
 	}
 
-	if err := builder.SetUp(nil); err != nil {
+	if err := mounter.SetUp(nil); err != nil {
 		t.Errorf("Expected success, got: %v", err)
 	}
 
@@ -210,30 +161,30 @@ func doTestPlugin(t *testing.T, config pluginTestConfig) {
 	}
 
 	// Check the number of mounts performed during setup
-	if e, a := config.expectedSetupMounts, len(mounter.Log); e != a {
-		t.Errorf("Expected %v mounter calls during setup, got %v", e, a)
+	if e, a := config.expectedSetupMounts, len(physicalMounter.Log); e != a {
+		t.Errorf("Expected %v physicalMounter calls during setup, got %v", e, a)
 	} else if config.expectedSetupMounts == 1 &&
-		(mounter.Log[0].Action != mount.FakeActionMount || mounter.Log[0].FSType != "tmpfs") {
-		t.Errorf("Unexpected mounter action during setup: %#v", mounter.Log[0])
+		(physicalMounter.Log[0].Action != mount.FakeActionMount || physicalMounter.Log[0].FSType != "tmpfs") {
+		t.Errorf("Unexpected physicalMounter action during setup: %#v", physicalMounter.Log[0])
 	}
-	mounter.ResetLog()
+	physicalMounter.ResetLog()
 
-	// Make a cleaner for the volume
+	// Make an unmounter for the volume
 	teardownMedium := mediumUnknown
 	if config.medium == api.StorageMediumMemory {
 		teardownMedium = mediumMemory
 	}
-	cleanerMountDetector := &fakeMountDetector{medium: teardownMedium, isMount: config.shouldBeMountedBeforeTeardown}
-	cleaner, err := plug.(*emptyDirPlugin).newCleanerInternal(volumeName, types.UID("poduid"), &mounter, cleanerMountDetector)
+	unmounterMountDetector := &fakeMountDetector{medium: teardownMedium, isMount: config.shouldBeMountedBeforeTeardown}
+	unmounter, err := plug.(*emptyDirPlugin).newUnmounterInternal(volumeName, types.UID("poduid"), &physicalMounter, unmounterMountDetector)
 	if err != nil {
-		t.Errorf("Failed to make a new Cleaner: %v", err)
+		t.Errorf("Failed to make a new Unmounter: %v", err)
 	}
-	if cleaner == nil {
-		t.Errorf("Got a nil Cleaner")
+	if unmounter == nil {
+		t.Errorf("Got a nil Unmounter")
 	}
 
 	// Tear down the volume
-	if err := cleaner.TearDown(); err != nil {
+	if err := unmounter.TearDown(); err != nil {
 		t.Errorf("Expected success, got: %v", err)
 	}
 	if _, err := os.Stat(volPath); err == nil {
@@ -242,13 +193,13 @@ func doTestPlugin(t *testing.T, config pluginTestConfig) {
 		t.Errorf("SetUp() failed: %v", err)
 	}
 
-	// Check the number of mounter calls during tardown
-	if e, a := config.expectedTeardownMounts, len(mounter.Log); e != a {
-		t.Errorf("Expected %v mounter calls during teardown, got %v", e, a)
-	} else if config.expectedTeardownMounts == 1 && mounter.Log[0].Action != mount.FakeActionUnmount {
-		t.Errorf("Unexpected mounter action during teardown: %#v", mounter.Log[0])
+	// Check the number of physicalMounter calls during tardown
+	if e, a := config.expectedTeardownMounts, len(physicalMounter.Log); e != a {
+		t.Errorf("Expected %v physicalMounter calls during teardown, got %v", e, a)
+	} else if config.expectedTeardownMounts == 1 && physicalMounter.Log[0].Action != mount.FakeActionUnmount {
+		t.Errorf("Unexpected physicalMounter action during teardown: %#v", physicalMounter.Log[0])
 	}
-	mounter.ResetLog()
+	physicalMounter.ResetLog()
 }
 
 func TestPluginBackCompat(t *testing.T) {
@@ -264,15 +215,15 @@ func TestPluginBackCompat(t *testing.T) {
 		Name: "vol1",
 	}
 	pod := &api.Pod{ObjectMeta: api.ObjectMeta{UID: types.UID("poduid")}}
-	builder, err := plug.NewBuilder(volume.NewSpecFromVolume(spec), pod, volume.VolumeOptions{RootContext: ""})
+	mounter, err := plug.NewMounter(volume.NewSpecFromVolume(spec), pod, volume.VolumeOptions{})
 	if err != nil {
-		t.Errorf("Failed to make a new Builder: %v", err)
+		t.Errorf("Failed to make a new Mounter: %v", err)
 	}
-	if builder == nil {
-		t.Errorf("Got a nil Builder")
+	if mounter == nil {
+		t.Errorf("Got a nil Mounter")
 	}
 
-	volPath := builder.GetPath()
+	volPath := mounter.GetPath()
 	if volPath != path.Join(basePath, "pods/poduid/volumes/kubernetes.io~empty-dir/vol1") {
 		t.Errorf("Got unexpected path: %s", volPath)
 	}
@@ -293,13 +244,13 @@ func TestMetrics(t *testing.T) {
 		Name: "vol1",
 	}
 	pod := &api.Pod{ObjectMeta: api.ObjectMeta{UID: types.UID("poduid")}}
-	builder, err := plug.NewBuilder(volume.NewSpecFromVolume(spec), pod, volume.VolumeOptions{RootContext: ""})
+	mounter, err := plug.NewMounter(volume.NewSpecFromVolume(spec), pod, volume.VolumeOptions{})
 	if err != nil {
-		t.Errorf("Failed to make a new Builder: %v", err)
+		t.Errorf("Failed to make a new Mounter: %v", err)
 	}
 
 	// Need to create the subdirectory
-	os.MkdirAll(builder.GetPath(), 0755)
+	os.MkdirAll(mounter.GetPath(), 0755)
 
 	expectedEmptyDirUsage, err := volumetest.FindEmptyDirectoryUsageOnTmpfs()
 	if err != nil {
@@ -307,7 +258,7 @@ func TestMetrics(t *testing.T) {
 	}
 
 	// TODO(pwittroc): Move this into a reusable testing utility
-	metrics, err := builder.GetMetrics()
+	metrics, err := mounter.GetMetrics()
 	if err != nil {
 		t.Errorf("Unexpected error when calling GetMetrics %v", err)
 	}
