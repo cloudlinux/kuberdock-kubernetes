@@ -1,5 +1,5 @@
 /*
-Copyright 2014 The Kubernetes Authors All rights reserved.
+Copyright 2014 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -23,17 +23,23 @@ import (
 	"reflect"
 
 	"github.com/spf13/cobra"
+	"k8s.io/kubernetes/pkg/kubectl/cmd/templates"
+
+	"k8s.io/kubernetes/pkg/client/unversioned/clientcmd"
+	cmdutil "k8s.io/kubernetes/pkg/kubectl/cmd/util"
 )
 
 type unsetOptions struct {
-	configAccess ConfigAccess
+	configAccess clientcmd.ConfigAccess
 	propertyName string
 }
 
-const unset_long = `Unsets an individual value in a kubeconfig file
-PROPERTY_NAME is a dot delimited name where each token represents either a attribute name or a map key.  Map keys may not contain dots.`
+var unset_long = templates.LongDesc(`
+	Unsets an individual value in a kubeconfig file
 
-func NewCmdConfigUnset(out io.Writer, configAccess ConfigAccess) *cobra.Command {
+	PROPERTY_NAME is a dot delimited name where each token represents either an attribute name or a map key.  Map keys may not contain dots.`)
+
+func NewCmdConfigUnset(out io.Writer, configAccess clientcmd.ConfigAccess) *cobra.Command {
 	options := &unsetOptions{configAccess: configAccess}
 
 	cmd := &cobra.Command{
@@ -45,12 +51,8 @@ func NewCmdConfigUnset(out io.Writer, configAccess ConfigAccess) *cobra.Command 
 				return
 			}
 
-			err := options.run()
-			if err != nil {
-				fmt.Fprintf(out, "%v\n", err)
-			} else {
-				fmt.Fprintf(out, "property %q unset.\n", options.propertyName)
-			}
+			cmdutil.CheckErr(options.run())
+			fmt.Fprintf(out, "Property %q unset.\n", options.propertyName)
 		},
 	}
 
@@ -72,12 +74,12 @@ func (o unsetOptions) run() error {
 	if err != nil {
 		return err
 	}
-	err = modifyConfig(reflect.ValueOf(config), steps, "", true)
+	err = modifyConfig(reflect.ValueOf(config), steps, "", true, true)
 	if err != nil {
 		return err
 	}
 
-	if err := ModifyConfig(o.configAccess, *config, false); err != nil {
+	if err := clientcmd.ModifyConfig(o.configAccess, *config, false); err != nil {
 		return err
 	}
 

@@ -1,5 +1,5 @@
 /*
-Copyright 2014 The Kubernetes Authors All rights reserved.
+Copyright 2014 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -43,15 +43,16 @@ func newTestHost(t *testing.T) (string, volume.VolumeHost) {
 
 func TestCanSupport(t *testing.T) {
 	plugMgr := volume.VolumePluginMgr{}
-	_, host := newTestHost(t)
+	tempDir, host := newTestHost(t)
+	defer os.RemoveAll(tempDir)
 	plugMgr.InitPlugins(ProbeVolumePlugins(), host)
 
 	plug, err := plugMgr.FindPluginByName("kubernetes.io/git-repo")
 	if err != nil {
 		t.Errorf("Can't find the plugin by name")
 	}
-	if plug.Name() != "kubernetes.io/git-repo" {
-		t.Errorf("Wrong name: %s", plug.Name())
+	if plug.GetPluginName() != "kubernetes.io/git-repo" {
+		t.Errorf("Wrong name: %s", plug.GetPluginName())
 	}
 	if !plug.CanSupport(&volume.Spec{Volume: &api.Volume{VolumeSource: api.VolumeSource{GitRepo: &api.GitRepoVolumeSource{}}}}) {
 		t.Errorf("Expected true")
@@ -221,6 +222,7 @@ func doTestPlugin(scenario struct {
 
 	plugMgr := volume.VolumePluginMgr{}
 	rootDir, host := newTestHost(t)
+	defer os.RemoveAll(rootDir)
 	plugMgr.InitPlugins(ProbeVolumePlugins(), host)
 
 	plug, err := plugMgr.FindPluginByName("kubernetes.io/git-repo")
@@ -230,20 +232,20 @@ func doTestPlugin(scenario struct {
 		return allErrs
 	}
 	pod := &api.Pod{ObjectMeta: api.ObjectMeta{UID: types.UID("poduid")}}
-	builder, err := plug.NewBuilder(volume.NewSpecFromVolume(scenario.vol), pod, volume.VolumeOptions{RootContext: ""})
+	mounter, err := plug.NewMounter(volume.NewSpecFromVolume(scenario.vol), pod, volume.VolumeOptions{})
 
 	if err != nil {
 		allErrs = append(allErrs,
-			fmt.Errorf("Failed to make a new Builder: %v", err))
+			fmt.Errorf("Failed to make a new Mounter: %v", err))
 		return allErrs
 	}
-	if builder == nil {
+	if mounter == nil {
 		allErrs = append(allErrs,
-			fmt.Errorf("Got a nil Builder"))
+			fmt.Errorf("Got a nil Mounter"))
 		return allErrs
 	}
 
-	path := builder.GetPath()
+	path := mounter.GetPath()
 	suffix := fmt.Sprintf("pods/poduid/volumes/kubernetes.io~git-repo/%v", scenario.vol.Name)
 	if !strings.HasSuffix(path, suffix) {
 		allErrs = append(allErrs,
@@ -252,7 +254,7 @@ func doTestPlugin(scenario struct {
 	}
 
 	// Test setUp()
-	setUpErrs := doTestSetUp(scenario, builder)
+	setUpErrs := doTestSetUp(scenario, mounter)
 	allErrs = append(allErrs, setUpErrs...)
 
 	if _, err := os.Stat(path); err != nil {
@@ -280,19 +282,19 @@ func doTestPlugin(scenario struct {
 		}
 	}
 
-	cleaner, err := plug.NewCleaner("vol1", types.UID("poduid"))
+	unmounter, err := plug.NewUnmounter("vol1", types.UID("poduid"))
 	if err != nil {
 		allErrs = append(allErrs,
-			fmt.Errorf("Failed to make a new Cleaner: %v", err))
+			fmt.Errorf("Failed to make a new Unmounter: %v", err))
 		return allErrs
 	}
-	if cleaner == nil {
+	if unmounter == nil {
 		allErrs = append(allErrs,
-			fmt.Errorf("Got a nil Cleaner"))
+			fmt.Errorf("Got a nil Unmounter"))
 		return allErrs
 	}
 
-	if err := cleaner.TearDown(); err != nil {
+	if err := unmounter.TearDown(); err != nil {
 		allErrs = append(allErrs,
 			fmt.Errorf("Expected success, got: %v", err))
 		return allErrs
@@ -312,7 +314,7 @@ func doTestSetUp(scenario struct {
 	vol               *api.Volume
 	expecteds         []expectedCommand
 	isExpectedFailure bool
-}, builder volume.Builder) []error {
+}, mounter volume.Mounter) []error {
 	expecteds := scenario.expecteds
 	allErrs := []error{}
 
@@ -349,7 +351,7 @@ func doTestSetUp(scenario struct {
 		CommandScript: fakeAction,
 	}
 
-	g := builder.(*gitRepoVolumeBuilder)
+	g := mounter.(*gitRepoVolumeMounter)
 	g.exec = &fake
 
 	g.SetUp(nil)

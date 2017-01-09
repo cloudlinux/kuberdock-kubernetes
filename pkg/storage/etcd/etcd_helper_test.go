@@ -1,5 +1,5 @@
 /*
-Copyright 2014 The Kubernetes Authors All rights reserved.
+Copyright 2014 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -29,13 +29,15 @@ import (
 	"k8s.io/kubernetes/pkg/api"
 	"k8s.io/kubernetes/pkg/api/testapi"
 	apitesting "k8s.io/kubernetes/pkg/api/testing"
+	"k8s.io/kubernetes/pkg/apimachinery/registered"
 	"k8s.io/kubernetes/pkg/conversion"
+	"k8s.io/kubernetes/pkg/fields"
+	"k8s.io/kubernetes/pkg/labels"
 	"k8s.io/kubernetes/pkg/runtime"
 	"k8s.io/kubernetes/pkg/runtime/serializer"
 	"k8s.io/kubernetes/pkg/storage"
 	"k8s.io/kubernetes/pkg/storage/etcd/etcdtest"
 	etcdtesting "k8s.io/kubernetes/pkg/storage/etcd/testing"
-	etcdutil "k8s.io/kubernetes/pkg/storage/etcd/util"
 	storagetesting "k8s.io/kubernetes/pkg/storage/testing"
 )
 
@@ -44,7 +46,7 @@ const validEtcdVersion = "etcd 2.0.9"
 func testScheme(t *testing.T) (*runtime.Scheme, runtime.Codec) {
 	scheme := runtime.NewScheme()
 	scheme.Log(t)
-	scheme.AddKnownTypes(*testapi.Default.GroupVersion(), &storagetesting.TestResource{})
+	scheme.AddKnownTypes(registered.GroupOrDie(api.GroupName).GroupVersion, &storagetesting.TestResource{})
 	scheme.AddKnownTypes(testapi.Default.InternalGroupVersion(), &storagetesting.TestResource{})
 	if err := scheme.AddConversionFuncs(
 		func(in *storagetesting.TestResource, out *storagetesting.TestResource, s conversion.Scope) error {
@@ -58,12 +60,12 @@ func testScheme(t *testing.T) (*runtime.Scheme, runtime.Codec) {
 	); err != nil {
 		panic(err)
 	}
-	codec := serializer.NewCodecFactory(scheme).LegacyCodec(*testapi.Default.GroupVersion())
+	codec := serializer.NewCodecFactory(scheme).LegacyCodec(registered.GroupOrDie(api.GroupName).GroupVersion)
 	return scheme, codec
 }
 
 func newEtcdHelper(client etcd.Client, codec runtime.Codec, prefix string) etcdHelper {
-	return *NewEtcdStorage(client, codec, prefix, false).(*etcdHelper)
+	return *NewEtcdStorage(client, codec, prefix, false, etcdtest.DeserializationCacheSize).(*etcdHelper)
 }
 
 // Returns an encoded version of api.Pod with the given name.
@@ -155,13 +157,17 @@ func TestListFiltered(t *testing.T) {
 	}
 
 	createPodList(t, helper, &list)
-	filter := func(obj runtime.Object) bool {
-		pod := obj.(*api.Pod)
-		return pod.Name == "bar"
+	// List only "bar" pod
+	p := storage.SelectionPredicate{
+		Label: labels.Everything(),
+		Field: fields.SelectorFromSet(fields.Set{"metadata.name": "bar"}),
+		GetAttrs: func(obj runtime.Object) (labels.Set, fields.Set, error) {
+			pod := obj.(*api.Pod)
+			return labels.Set(pod.Labels), fields.Set{"metadata.name": pod.Name}, nil
+		},
 	}
-
 	var got api.PodList
-	err := helper.List(context.TODO(), key, "", filter, &got)
+	err := helper.List(context.TODO(), key, "", p, &got)
 	if err != nil {
 		t.Errorf("Unexpected error %v", err)
 	}
@@ -230,7 +236,7 @@ func TestGet(t *testing.T) {
 		Spec:       apitesting.DeepEqualSafePodSpec(),
 	}
 	var got api.Pod
-	if err := helper.Set(context.TODO(), key, &expect, &got, 0); err != nil {
+	if err := helper.Create(context.TODO(), key, &expect, &got, 0); err != nil {
 		t.Errorf("Unexpected error %#v", err)
 	}
 	expect = got
@@ -251,7 +257,7 @@ func TestGetNotFoundErr(t *testing.T) {
 
 	var got api.Pod
 	err := helper.Get(context.TODO(), boguskey, &got, false)
-	if !etcdutil.IsEtcdNotFound(err) {
+	if !storage.IsNotFound(err) {
 		t.Errorf("Unexpected reponse on key=%v, err=%v", key, err)
 	}
 }
@@ -294,76 +300,6 @@ func TestCreateNilOutParam(t *testing.T) {
 	}
 }
 
-func TestSet(t *testing.T) {
-	obj := &api.Pod{ObjectMeta: api.ObjectMeta{Name: "foo"}}
-	server := etcdtesting.NewEtcdTestClientServer(t)
-	defer server.Terminate(t)
-	helper := newEtcdHelper(server.Client, testapi.Default.Codec(), etcdtest.PathPrefix())
-	returnedObj := &api.Pod{}
-	err := helper.Set(context.TODO(), "/some/key", obj, returnedObj, 5)
-	if err != nil {
-		t.Errorf("Unexpected error %#v", err)
-	}
-
-	if obj.ObjectMeta.Name == returnedObj.ObjectMeta.Name {
-		// Set worked, now override the values.
-		obj = returnedObj
-	}
-
-	err = helper.Get(context.TODO(), "/some/key", returnedObj, false)
-	if err != nil {
-		t.Errorf("Unexpected error %#v", err)
-	}
-	if !reflect.DeepEqual(obj, returnedObj) {
-		t.Errorf("Wanted %#v, got %#v", obj, returnedObj)
-	}
-}
-
-func TestSetFailCAS(t *testing.T) {
-	obj := &api.Pod{ObjectMeta: api.ObjectMeta{Name: "foo", ResourceVersion: "1"}}
-	server := etcdtesting.NewEtcdTestClientServer(t)
-	defer server.Terminate(t)
-	helper := newEtcdHelper(server.Client, testapi.Default.Codec(), etcdtest.PathPrefix())
-	err := helper.Set(context.TODO(), "/some/key", obj, nil, 5)
-	if err == nil {
-		t.Errorf("Expecting error.")
-	}
-}
-
-func TestSetWithVersion(t *testing.T) {
-	obj := &api.Pod{ObjectMeta: api.ObjectMeta{Name: "foo"}}
-	server := etcdtesting.NewEtcdTestClientServer(t)
-	defer server.Terminate(t)
-	helper := newEtcdHelper(server.Client, testapi.Default.Codec(), etcdtest.PathPrefix())
-
-	returnedObj := &api.Pod{}
-	err := helper.Set(context.TODO(), "/some/key", obj, returnedObj, 7)
-	if err != nil {
-		t.Fatalf("Unexpected error %#v", err)
-	}
-	// resource revision is now set, try to set again with new value to test CAS
-	obj = returnedObj
-	obj.Name = "bar"
-	err = helper.Set(context.TODO(), "/some/key", obj, returnedObj, 7)
-	if err != nil {
-		t.Fatalf("Unexpected error %#v", err)
-	}
-	if returnedObj.Name != "bar" {
-		t.Fatalf("Unexpected error %#v", returnedObj)
-	}
-}
-
-func TestSetNilOutParam(t *testing.T) {
-	obj := &api.Pod{ObjectMeta: api.ObjectMeta{Name: "foo"}}
-	server := etcdtesting.NewEtcdTestClientServer(t)
-	defer server.Terminate(t)
-	helper := newEtcdHelper(server.Client, testapi.Default.Codec(), etcdtest.PathPrefix())
-	err := helper.Set(context.TODO(), "/some/key", obj, nil, 3)
-	if err != nil {
-		t.Errorf("Unexpected error %#v", err)
-	}
-}
-
 func TestGuaranteedUpdate(t *testing.T) {
 	_, codec := testScheme(t)
 	server := etcdtesting.NewEtcdTestClientServer(t)
@@ -372,7 +308,7 @@ func TestGuaranteedUpdate(t *testing.T) {
 	helper := newEtcdHelper(server.Client, codec, key)
 
 	obj := &storagetesting.TestResource{ObjectMeta: api.ObjectMeta{Name: "foo"}, Value: 1}
-	err := helper.GuaranteedUpdate(context.TODO(), key, &storagetesting.TestResource{}, true, storage.SimpleUpdate(func(in runtime.Object) (runtime.Object, error) {
+	err := helper.GuaranteedUpdate(context.TODO(), key, &storagetesting.TestResource{}, true, nil, storage.SimpleUpdate(func(in runtime.Object) (runtime.Object, error) {
 		return obj, nil
 	}))
 	if err != nil {
@@ -382,7 +318,7 @@ func TestGuaranteedUpdate(t *testing.T) {
 	// Update an existing node.
 	callbackCalled := false
 	objUpdate := &storagetesting.TestResource{ObjectMeta: api.ObjectMeta{Name: "foo"}, Value: 2}
-	err = helper.GuaranteedUpdate(context.TODO(), key, &storagetesting.TestResource{}, true, storage.SimpleUpdate(func(in runtime.Object) (runtime.Object, error) {
+	err = helper.GuaranteedUpdate(context.TODO(), key, &storagetesting.TestResource{}, true, nil, storage.SimpleUpdate(func(in runtime.Object) (runtime.Object, error) {
 		callbackCalled = true
 
 		if in.(*storagetesting.TestResource).Value != 1 {
@@ -417,7 +353,7 @@ func TestGuaranteedUpdateNoChange(t *testing.T) {
 	helper := newEtcdHelper(server.Client, codec, key)
 
 	obj := &storagetesting.TestResource{ObjectMeta: api.ObjectMeta{Name: "foo"}, Value: 1}
-	err := helper.GuaranteedUpdate(context.TODO(), key, &storagetesting.TestResource{}, true, storage.SimpleUpdate(func(in runtime.Object) (runtime.Object, error) {
+	err := helper.GuaranteedUpdate(context.TODO(), key, &storagetesting.TestResource{}, true, nil, storage.SimpleUpdate(func(in runtime.Object) (runtime.Object, error) {
 		return obj, nil
 	}))
 	if err != nil {
@@ -427,7 +363,7 @@ func TestGuaranteedUpdateNoChange(t *testing.T) {
 	// Update an existing node with the same data
 	callbackCalled := false
 	objUpdate := &storagetesting.TestResource{ObjectMeta: api.ObjectMeta{Name: "foo"}, Value: 1}
-	err = helper.GuaranteedUpdate(context.TODO(), key, &storagetesting.TestResource{}, true, storage.SimpleUpdate(func(in runtime.Object) (runtime.Object, error) {
+	err = helper.GuaranteedUpdate(context.TODO(), key, &storagetesting.TestResource{}, true, nil, storage.SimpleUpdate(func(in runtime.Object) (runtime.Object, error) {
 		callbackCalled = true
 		return objUpdate, nil
 	}))
@@ -454,13 +390,13 @@ func TestGuaranteedUpdateKeyNotFound(t *testing.T) {
 	})
 
 	ignoreNotFound := false
-	err := helper.GuaranteedUpdate(context.TODO(), key, &storagetesting.TestResource{}, ignoreNotFound, f)
+	err := helper.GuaranteedUpdate(context.TODO(), key, &storagetesting.TestResource{}, ignoreNotFound, nil, f)
 	if err == nil {
 		t.Errorf("Expected error for key not found.")
 	}
 
 	ignoreNotFound = true
-	err = helper.GuaranteedUpdate(context.TODO(), key, &storagetesting.TestResource{}, ignoreNotFound, f)
+	err = helper.GuaranteedUpdate(context.TODO(), key, &storagetesting.TestResource{}, ignoreNotFound, nil, f)
 	if err != nil {
 		t.Errorf("Unexpected error %v.", err)
 	}
@@ -485,7 +421,7 @@ func TestGuaranteedUpdate_CreateCollision(t *testing.T) {
 			defer wgDone.Done()
 
 			firstCall := true
-			err := helper.GuaranteedUpdate(context.TODO(), key, &storagetesting.TestResource{}, true, storage.SimpleUpdate(func(in runtime.Object) (runtime.Object, error) {
+			err := helper.GuaranteedUpdate(context.TODO(), key, &storagetesting.TestResource{}, true, nil, storage.SimpleUpdate(func(in runtime.Object) (runtime.Object, error) {
 				defer func() { firstCall = false }()
 
 				if firstCall {
@@ -515,6 +451,26 @@ func TestGuaranteedUpdate_CreateCollision(t *testing.T) {
 	}
 }
 
+func TestGuaranteedUpdateUIDMismatch(t *testing.T) {
+	server := etcdtesting.NewEtcdTestClientServer(t)
+	defer server.Terminate(t)
+	prefix := path.Join("/", etcdtest.PathPrefix())
+	helper := newEtcdHelper(server.Client, testapi.Default.Codec(), prefix)
+
+	obj := &api.Pod{ObjectMeta: api.ObjectMeta{Name: "foo", UID: "A"}}
+	podPtr := &api.Pod{}
+	err := helper.Create(context.TODO(), "/some/key", obj, podPtr, 0)
+	if err != nil {
+		t.Fatalf("Unexpected error %#v", err)
+	}
+	err = helper.GuaranteedUpdate(context.TODO(), "/some/key", podPtr, true, storage.NewUIDPreconditions("B"), storage.SimpleUpdate(func(in runtime.Object) (runtime.Object, error) {
+		return obj, nil
+	}))
+	if !storage.IsInvalidObj(err) {
+		t.Fatalf("Expect a Test Failed (write conflict) error, got: %v", err)
+	}
+}
+
 func TestPrefixEtcdKey(t *testing.T) {
 	server := etcdtesting.NewEtcdTestClientServer(t)
 	defer server.Terminate(t)
@@ -534,4 +490,80 @@ func TestPrefixEtcdKey(t *testing.T) {
 	keyAfter = helper.prefixEtcdKey(keyBefore)
 
 	assert.Equal(t, keyBefore, keyAfter, "Prefix incorrectly added by EtcdHelper")
+}
+
+func TestDeleteUIDMismatch(t *testing.T) {
+	server := etcdtesting.NewEtcdTestClientServer(t)
+	defer server.Terminate(t)
+	prefix := path.Join("/", etcdtest.PathPrefix())
+	helper := newEtcdHelper(server.Client, testapi.Default.Codec(), prefix)
+
+	obj := &api.Pod{ObjectMeta: api.ObjectMeta{Name: "foo", UID: "A"}}
+	podPtr := &api.Pod{}
+	err := helper.Create(context.TODO(), "/some/key", obj, podPtr, 0)
+	if err != nil {
+		t.Fatalf("Unexpected error %#v", err)
+	}
+	err = helper.Delete(context.TODO(), "/some/key", obj, storage.NewUIDPreconditions("B"))
+	if !storage.IsInvalidObj(err) {
+		t.Fatalf("Expect a Test Failed (write conflict) error, got: %v", err)
+	}
+}
+
+type getFunc func(ctx context.Context, key string, opts *etcd.GetOptions) (*etcd.Response, error)
+
+type fakeDeleteKeysAPI struct {
+	etcd.KeysAPI
+	fakeGetFunc getFunc
+	getCount    int
+	// The fakeGetFunc will be called fakeGetCap times before the KeysAPI's Get will be called.
+	fakeGetCap int
+}
+
+func (f *fakeDeleteKeysAPI) Get(ctx context.Context, key string, opts *etcd.GetOptions) (*etcd.Response, error) {
+	f.getCount++
+	if f.getCount < f.fakeGetCap {
+		return f.fakeGetFunc(ctx, key, opts)
+	}
+	return f.KeysAPI.Get(ctx, key, opts)
+}
+
+// This is to emulate the case where another party updates the object when
+// etcdHelper.Delete has verified the preconditions, but hasn't carried out the
+// deletion yet. Etcd will fail the deletion and report the conflict. etcdHelper
+// should retry until there is no conflict.
+func TestDeleteWithRetry(t *testing.T) {
+	server := etcdtesting.NewEtcdTestClientServer(t)
+	defer server.Terminate(t)
+	prefix := path.Join("/", etcdtest.PathPrefix())
+
+	obj := &api.Pod{ObjectMeta: api.ObjectMeta{Name: "foo", UID: "A"}}
+	// fakeGet returns a large ModifiedIndex to emulate the case that another
+	// party has updated the object.
+	fakeGet := func(ctx context.Context, key string, opts *etcd.GetOptions) (*etcd.Response, error) {
+		data, _ := runtime.Encode(testapi.Default.Codec(), obj)
+		return &etcd.Response{Node: &etcd.Node{Value: string(data), ModifiedIndex: 99}}, nil
+	}
+	expectedRetries := 3
+	helper := newEtcdHelper(server.Client, testapi.Default.Codec(), prefix)
+	fake := &fakeDeleteKeysAPI{KeysAPI: helper.etcdKeysAPI, fakeGetCap: expectedRetries, fakeGetFunc: fakeGet}
+	helper.etcdKeysAPI = fake
+
+	returnedObj := &api.Pod{}
+	err := helper.Create(context.TODO(), "/some/key", obj, returnedObj, 0)
+	if err != nil {
+		t.Errorf("Unexpected error %#v", err)
+	}
+
+	err = helper.Delete(context.TODO(), "/some/key", obj, storage.NewUIDPreconditions("A"))
+	if err != nil {
+		t.Errorf("Unexpected error %#v", err)
+	}
+	if fake.getCount != expectedRetries {
+		t.Errorf("Expect %d retries, got %d", expectedRetries, fake.getCount)
+	}
+	err = helper.Get(context.TODO(), "/some/key", obj, false)
+	if !storage.IsNotFound(err) {
+		t.Errorf("Expect an NotFound error, got %v", err)
+	}
 }
