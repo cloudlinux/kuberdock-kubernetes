@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Copyright 2015 The Kubernetes Authors All rights reserved.
+# Copyright 2015 The Kubernetes Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -16,16 +16,33 @@
 
 source "${KUBE_ROOT}/cluster/kubemark/config-default.sh"
 source "${KUBE_ROOT}/cluster/kubemark/util.sh"
-source "${KUBE_ROOT}/cluster/kube-env.sh"
+source "${KUBE_ROOT}/cluster/lib/util.sh"
+
+# hack/lib/init.sh will ovewrite ETCD_VERSION if this is unset
+# what what is default in hack/lib/etcd.sh
+# To avoid it, if it is empty, we set it to 'avoid-overwrite' and
+# clean it after that.
+if [ -z "${ETCD_IMAGE}" ]; then
+  ETCD_IMAGE="avoid-overwrite"
+fi
+source "${KUBE_ROOT}/hack/lib/init.sh"
+if [ "${ETCD_IMAGE}" == "avoid-overwrite" ]; then
+  ETCD_IMAGE=""
+fi
 
 detect-project &> /dev/null
 export PROJECT
+find-release-tars
 
 MASTER_NAME="${INSTANCE_PREFIX}-kubemark-master"
 MASTER_TAG="kubemark-master"
 EVENT_STORE_NAME="${INSTANCE_PREFIX}-event-store"
 
 RETRIES=3
+
+export KUBECTL="${KUBE_ROOT}/cluster/kubectl.sh"
+export KUBEMARK_DIRECTORY="${KUBE_ROOT}/test/kubemark"
+export RESOURCE_DIRECTORY="${KUBEMARK_DIRECTORY}/resources"
 
 # Runs gcloud compute command with the given parameters. Up to $RETRIES will be made
 # to execute the command.

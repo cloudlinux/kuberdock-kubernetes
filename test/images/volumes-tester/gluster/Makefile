@@ -1,4 +1,4 @@
-# Copyright 2016 The Kubernetes Authors All rights reserved.
+# Copyright 2016 The Kubernetes Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-TAG = 0.2
+TAG = 0.3
 PREFIX = gcr.io/google_containers
 
 all: push
@@ -21,10 +21,10 @@ container: image
 
 image:
 	docker build -t $(PREFIX)/volume-gluster . # Build new image and automatically tag it as latest
-	docker tag $(PREFIX)/volume-gluster $(PREFIX)/volume-gluster:$(TAG)  # Add the version tag to the latest image 
+	docker tag $(PREFIX)/volume-gluster $(PREFIX)/volume-gluster:$(TAG)  # Add the version tag to the latest image
 
 push: image
-	gcloud docker push $(PREFIX)/volume-gluster # Push image tagged as latest to repository
-	gcloud docker push $(PREFIX)/volume-gluster:$(TAG) # Push version tagged image to repository (since this image is already pushed it will simply create or update version tag)
+	gcloud docker -- push $(PREFIX)/volume-gluster # Push image tagged as latest to repository
+	gcloud docker -- push $(PREFIX)/volume-gluster:$(TAG) # Push version tagged image to repository (since this image is already pushed it will simply create or update version tag)
 
 clean:

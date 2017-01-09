@@ -1,14 +1,13 @@
-<!-- BEGIN MUNGE: UNVERSIONED_WARNING -->
+## Logging Conventions
 
-
-<!-- END MUNGE: UNVERSIONED_WARNING -->
-Logging Conventions
-===================
-
-The following conventions for the glog levels to use.  [glog](http://godoc.org/github.com/golang/glog) is globally preferred to [log](http://golang.org/pkg/log/) for better runtime control.
+The following conventions for the glog levels to use.
+[glog](http://godoc.org/github.com/golang/glog) is globally preferred to
+[log](http://golang.org/pkg/log/) for better runtime control.
 
 * glog.Errorf() - Always an error
+
 * glog.Warningf() - Something unexpected, but probably not an error
+
 * glog.Infof() has multiple levels:
   * glog.V(0) - Generally useful for this to ALWAYS be visible to an operator
     * Programmer errors
@@ -27,14 +26,9 @@ The following conventions for the glog levels to use.  [glog](http://godoc.org/g
   * glog.V(4) - Debug level verbosity (for now)
     * Logging in particularly thorny parts of code where you may want to come back later and check it
 
-As per the comments, the practical default level is V(2).  Developers and QE environments may wish to run at V(3) or V(4). If you wish to change the log level, you can pass in `-v=X` where X is the desired maximum level to log.
-
-
-
-
-<!-- BEGIN MUNGE: IS_VERSIONED -->
-<!-- TAG IS_VERSIONED -->
-<!-- END MUNGE: IS_VERSIONED -->
+As per the comments, the practical default level is V(2). Developers and QE
+environments may wish to run at V(3) or V(4). If you wish to change the log
+level, you can pass in `-v=X` where X is the desired maximum level to log.
 
 
 <!-- BEGIN MUNGE: GENERATED_ANALYTICS -->

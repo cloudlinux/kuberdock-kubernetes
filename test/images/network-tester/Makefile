@@ -1,4 +1,4 @@
-# Copyright 2016 The Kubernetes Authors All rights reserved.
+# Copyright 2016 The Kubernetes Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,13 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-TAG = 1.8
+TAG = 1.9
 PREFIX = gcr.io/google_containers
 
 all: push
 
 webserver: webserver.go
-	CGO_ENABLED=0 GOOS=linux godep go build -a -installsuffix cgo -ldflags '-w' ./webserver.go
+	CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -ldflags '-w' ./webserver.go
 
 container: image
 
@@ -26,7 +26,7 @@ image: webserver
 	docker build -t $(PREFIX)/nettest:$(TAG) .
 
 push: image
-	gcloud docker push $(PREFIX)/nettest:$(TAG)
+	gcloud docker -- push $(PREFIX)/nettest:$(TAG)
 
 clean:
 	rm -f webserver
