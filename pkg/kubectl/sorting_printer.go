@@ -1,5 +1,5 @@
 /*
-Copyright 2014 The Kubernetes Authors All rights reserved.
+Copyright 2014 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -23,8 +23,10 @@ import (
 	"sort"
 
 	"k8s.io/kubernetes/pkg/api/meta"
+	"k8s.io/kubernetes/pkg/api/unversioned"
 	"k8s.io/kubernetes/pkg/api/v1"
 	"k8s.io/kubernetes/pkg/runtime"
+	"k8s.io/kubernetes/pkg/util/integer"
 	"k8s.io/kubernetes/pkg/util/jsonpath"
 
 	"github.com/golang/glog"
@@ -36,6 +38,10 @@ type SortingPrinter struct {
 	SortField string
 	Delegate  ResourcePrinter
 	Decoder   runtime.Decoder
+}
+
+func (s *SortingPrinter) AfterPrint(w io.Writer, res string) error {
+	return nil
 }
 
 func (s *SortingPrinter) PrintObj(obj runtime.Object, out io.Writer) error {
@@ -97,13 +103,19 @@ func SortObjects(decoder runtime.Decoder, objs []runtime.Object, fieldInput stri
 		switch u := item.(type) {
 		case *runtime.Unknown:
 			var err error
-			if objs[ix], _, err = decoder.Decode(u.RawJSON, nil, nil); err != nil {
+			if objs[ix], _, err = decoder.Decode(u.Raw, nil, nil); err != nil {
 				return nil, err
 			}
 		}
 	}
 
-	values, err := parser.FindResults(reflect.ValueOf(objs[0]).Elem().Interface())
+	var values [][]reflect.Value
+	if unstructured, ok := objs[0].(*runtime.Unstructured); ok {
+		values, err = parser.FindResults(unstructured.Object)
+	} else {
+		values, err = parser.FindResults(reflect.ValueOf(objs[0]).Elem().Interface())
+	}
+
 	if err != nil {
 		return nil, err
 	}
@@ -153,6 +165,89 @@ func isLess(i, j reflect.Value) (bool, error) {
 		return i.String() < j.String(), nil
 	case reflect.Ptr:
 		return isLess(i.Elem(), j.Elem())
+	case reflect.Struct:
+		// sort unversioned.Time
+		in := i.Interface()
+		if t, ok := in.(unversioned.Time); ok {
+			return t.Before(j.Interface().(unversioned.Time)), nil
+		}
+		// fallback to the fields comparison
+		for idx := 0; idx < i.NumField(); idx++ {
+			less, err := isLess(i.Field(idx), j.Field(idx))
+			if err != nil || !less {
+				return less, err
+			}
+		}
+		return true, nil
+	case reflect.Array, reflect.Slice:
+		// note: the length of i and j may be different
+		for idx := 0; idx < integer.IntMin(i.Len(), j.Len()); idx++ {
+			less, err := isLess(i.Index(idx), j.Index(idx))
+			if err != nil || !less {
+				return less, err
+			}
+		}
+		return true, nil
+
+	case reflect.Interface:
+		switch itype := i.Interface().(type) {
+		case uint8:
+			if jtype, ok := j.Interface().(uint8); ok {
+				return itype < jtype, nil
+			}
+		case uint16:
+			if jtype, ok := j.Interface().(uint16); ok {
+				return itype < jtype, nil
+			}
+		case uint32:
+			if jtype, ok := j.Interface().(uint32); ok {
+				return itype < jtype, nil
+			}
+		case uint64:
+			if jtype, ok := j.Interface().(uint64); ok {
+				return itype < jtype, nil
+			}
+		case int8:
+			if jtype, ok := j.Interface().(int8); ok {
+				return itype < jtype, nil
+			}
+		case int16:
+			if jtype, ok := j.Interface().(int16); ok {
+				return itype < jtype, nil
+			}
+		case int32:
+			if jtype, ok := j.Interface().(int32); ok {
+				return itype < jtype, nil
+			}
+		case int64:
+			if jtype, ok := j.Interface().(int64); ok {
+				return itype < jtype, nil
+			}
+		case uint:
+			if jtype, ok := j.Interface().(uint); ok {
+				return itype < jtype, nil
+			}
+		case int:
+			if jtype, ok := j.Interface().(int); ok {
+				return itype < jtype, nil
+			}
+		case float32:
+			if jtype, ok := j.Interface().(float32); ok {
+				return itype < jtype, nil
+			}
+		case float64:
+			if jtype, ok := j.Interface().(float64); ok {
+				return itype < jtype, nil
+			}
+		case string:
+			if jtype, ok := j.Interface().(string); ok {
+				return itype < jtype, nil
+			}
+		default:
+			return false, fmt.Errorf("unsortable type: %T", itype)
+		}
+		return false, fmt.Errorf("unsortable interface: %v", i.Kind())
+
 	default:
 		return false, fmt.Errorf("unsortable type: %v", i.Kind())
 	}
@@ -165,11 +260,24 @@ func (r *RuntimeSort) Less(i, j int) bool {
 	parser := jsonpath.New("sorting")
 	parser.Parse(r.field)
 
-	iValues, err := parser.FindResults(reflect.ValueOf(iObj).Elem().Interface())
+	var iValues [][]reflect.Value
+	var jValues [][]reflect.Value
+	var err error
+
+	if unstructured, ok := iObj.(*runtime.Unstructured); ok {
+		iValues, err = parser.FindResults(unstructured.Object)
+	} else {
+		iValues, err = parser.FindResults(reflect.ValueOf(iObj).Elem().Interface())
+	}
 	if err != nil {
 		glog.Fatalf("Failed to get i values for %#v using %s (%#v)", iObj, r.field, err)
 	}
-	jValues, err := parser.FindResults(reflect.ValueOf(jObj).Elem().Interface())
+
+	if unstructured, ok := jObj.(*runtime.Unstructured); ok {
+		jValues, err = parser.FindResults(unstructured.Object)
+	} else {
+		jValues, err = parser.FindResults(reflect.ValueOf(jObj).Elem().Interface())
+	}
 	if err != nil {
 		glog.Fatalf("Failed to get j values for %#v using %s (%v)", jObj, r.field, err)
 	}

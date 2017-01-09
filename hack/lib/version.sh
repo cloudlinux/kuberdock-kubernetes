@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Copyright 2014 The Kubernetes Authors All rights reserved.
+# Copyright 2014 The Kubernetes Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -56,7 +56,14 @@ kube::version::get_version_vars() {
       #
       # TODO: We continue calling this "git version" because so many
       # downstream consumers are expecting it there.
-      KUBE_GIT_VERSION=$(echo "${KUBE_GIT_VERSION}" | sed "s/-\([0-9]\{1,\}\)-g\([0-9a-f]\{14\}\)$/.\1\+\2/")
+      DASHES_IN_VERSION=$(echo "${KUBE_GIT_VERSION}" | sed "s/[^-]//g")
+      if [[ "${DASHES_IN_VERSION}" == "---" ]] ; then
+        # We have distance to subversion (v1.1.0-subversion-1-gCommitHash)
+        KUBE_GIT_VERSION=$(echo "${KUBE_GIT_VERSION}" | sed "s/-\([0-9]\{1,\}\)-g\([0-9a-f]\{14\}\)$/.\1\+\2/")
+      elif [[ "${DASHES_IN_VERSION}" == "--" ]] ; then
+        # We have distance to base tag (v1.1.0-1-gCommitHash)
+        KUBE_GIT_VERSION=$(echo "${KUBE_GIT_VERSION}" | sed "s/-g\([0-9a-f]\{14\}\)$/+\1/")
+      fi
       if [[ "${KUBE_GIT_TREE_STATE}" == "dirty" ]]; then
         # git describe --dirty only considers changes to existing files, but
         # that is problematic since new untracked .go files affect the build,
@@ -107,18 +114,11 @@ kube::version::load_version_vars() {
   source "${version_file}"
 }
 
-# golang 1.5+ wants `-X key=val`, but golang 1.4- REQUIRES `-X key val`
 kube::version::ldflag() {
   local key=${1}
   local val=${2}
 
-  GO_VERSION=($(go version))
-
-  if [[ -n $(echo "${GO_VERSION[2]}" | grep -E 'go1.1|go1.2|go1.3|go1.4') ]]; then
-    echo "-X ${KUBE_GO_PACKAGE}/pkg/version.${key} ${val}"
-  else
-    echo "-X ${KUBE_GO_PACKAGE}/pkg/version.${key}=${val}"
-  fi
+  echo "-X ${KUBE_GO_PACKAGE}/pkg/version.${key}=${val}"
 }
 
 # Prints the value that needs to be passed to the -ldflags parameter of go build
@@ -126,7 +126,7 @@ kube::version::ldflag() {
 kube::version::ldflags() {
   kube::version::get_version_vars
 
-  local -a ldflags=()
+  local -a ldflags=($(kube::version::ldflag "buildDate" "$(date -u +'%Y-%m-%dT%H:%M:%SZ')"))
   if [[ -n ${KUBE_GIT_COMMIT-} ]]; then
     ldflags+=($(kube::version::ldflag "gitCommit" "${KUBE_GIT_COMMIT}"))
     ldflags+=($(kube::version::ldflag "gitTreeState" "${KUBE_GIT_TREE_STATE}"))

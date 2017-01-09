@@ -1,8 +1,3 @@
-<!-- BEGIN MUNGE: UNVERSIONED_WARNING -->
-
-
-<!-- END MUNGE: UNVERSIONED_WARNING -->
-
 ## Guestbook Example
 
 This example shows how to build a simple multi-tier web application using Kubernetes and Docker. The application consists of a web front-end, Redis master for storage, and replicated set of Redis slaves, all for which we will create Kubernetes replication controllers, pods, and services.
@@ -63,11 +58,11 @@ Use the `examples/guestbook-go/redis-master-controller.json` file to create a [r
 4. To verify what containers are running in the redis-master pod, you can SSH to that machine with `gcloud compute ssh --zone` *`zone_name`* *`host_name`* and then run `docker ps`:
 
     ```console
-    me@workstation$ gcloud compute ssh --zone us-central1-b kubernetes-minion-bz1p
+    me@workstation$ gcloud compute ssh --zone us-central1-b kubernetes-node-bz1p
     
-    me@kubernetes-minion-3:~$ sudo docker ps
-    CONTAINER ID        IMAGE                      COMMAND                CREATED             STATUS
-    d5c458dabe50        gurpartap/redis:latest     "/usr/local/bin/redi   5 minutes ago       Up 5 minutes
+    me@kubernetes-node-3:~$ sudo docker ps
+    CONTAINER ID        IMAGE     COMMAND                  CREATED             STATUS
+    d5c458dabe50        redis     "/entrypoint.sh redis"   5 minutes ago       Up 5 minutes
     ```
 
     Note: The initial `docker pull` can take a few minutes, depending on network conditions.
@@ -112,9 +107,9 @@ The Redis master we created earlier is a single pod (REPLICAS = 1), while the Re
 
     ```console
     $ kubectl get rc
-    CONTROLLER              CONTAINER(S)            IMAGE(S)               SELECTOR                    REPLICAS
-    redis-master            redis-master            gurpartap/redis        app=redis,role=master       1
-    redis-slave             redis-slave             gurpartap/redis        app=redis,role=slave        2
+    CONTROLLER              CONTAINER(S)            IMAGE(S)                         SELECTOR                    REPLICAS
+    redis-master            redis-master            redis                            app=redis,role=master       1
+    redis-slave             redis-slave             kubernetes/redis-slave:v2        app=redis,role=slave        2
     ...
     ```
 
@@ -176,14 +171,16 @@ This is a simple Go `net/http` ([negroni](https://github.com/codegangsta/negroni
     replicationcontrollers/guestbook
     ```
 
+ Tip: If you want to modify the guestbook code open the `_src` of this example and read the README.md and the Makefile. If you have pushed your custom image be sure to update the `image` accordingly in the guestbook-controller.json.
+
 2. To verify that the guestbook replication controller is running, run the `kubectl get rc` command:
 
     ```console
     $ kubectl get rc
-    CONTROLLER            CONTAINER(S)         IMAGE(S)                    SELECTOR                  REPLICAS
-    guestbook             guestbook            kubernetes/guestbook:v2     app=guestbook             3
-    redis-master          redis-master         gurpartap/redis             app=redis,role=master     1
-    redis-slave           redis-slave          gurpartap/redis             app=redis,role=slave      2
+    CONTROLLER            CONTAINER(S)         IMAGE(S)                               SELECTOR                  REPLICAS
+    guestbook             guestbook            gcr.io/google_containers/guestbook:v3  app=guestbook             3
+    redis-master          redis-master         redis                                  app=redis,role=master     1
+    redis-slave           redis-slave          kubernetes/redis-slave:v2              app=redis,role=slave      2
     ...
     ```
 
@@ -267,13 +264,6 @@ redis-slave
 
 Tip: To turn down your Kubernetes cluster, follow the corresponding instructions in the version of the
 [Getting Started Guides](../../docs/getting-started-guides/) that you previously used to create your cluster.
-
-
-
-
-<!-- BEGIN MUNGE: IS_VERSIONED -->
-<!-- TAG IS_VERSIONED -->
-<!-- END MUNGE: IS_VERSIONED -->
 
 
 <!-- BEGIN MUNGE: GENERATED_ANALYTICS -->

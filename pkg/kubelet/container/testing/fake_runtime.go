@@ -1,5 +1,5 @@
 /*
-Copyright 2015 The Kubernetes Authors All rights reserved.
+Copyright 2015 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -19,6 +19,7 @@ package testing
 import (
 	"fmt"
 	"io"
+	"net/url"
 	"reflect"
 	"sync"
 	"time"
@@ -26,16 +27,22 @@ import (
 	"k8s.io/kubernetes/pkg/api"
 	. "k8s.io/kubernetes/pkg/kubelet/container"
 	"k8s.io/kubernetes/pkg/types"
-	"k8s.io/kubernetes/pkg/util"
+	"k8s.io/kubernetes/pkg/util/flowcontrol"
+	"k8s.io/kubernetes/pkg/util/term"
 	"k8s.io/kubernetes/pkg/volume"
 )
+
+type FakePod struct {
+	Pod       *Pod
+	NetnsPath string
+}
 
 // FakeRuntime is a fake container runtime for testing.
 type FakeRuntime struct {
 	sync.Mutex
 	CalledFunctions   []string
-	PodList           []*Pod
-	AllPodList        []*Pod
+	PodList           []*FakePod
+	AllPodList        []*FakePod
 	ImageList         []Image
 	APIPodStatus      api.PodStatus
 	PodStatus         PodStatus
@@ -43,12 +50,38 @@ type FakeRuntime struct {
 	KilledPods        []string
 	StartedContainers []string
 	KilledContainers  []string
+	RuntimeStatus     *RuntimeStatus
 	VersionInfo       string
 	APIVersionInfo    string
 	RuntimeType       string
 	Err               error
 	InspectErr        error
 	StatusErr         error
+}
+
+type FakeDirectStreamingRuntime struct {
+	*FakeRuntime
+
+	// Arguments to streaming method calls.
+	Args struct {
+		// Attach / Exec args
+		ContainerID ContainerID
+		Cmd         []string
+		Stdin       io.Reader
+		Stdout      io.WriteCloser
+		Stderr      io.WriteCloser
+		TTY         bool
+		// Port-forward args
+		Pod    *Pod
+		Port   uint16
+		Stream io.ReadWriteCloser
+	}
+}
+
+const FakeHost = "localhost:12345"
+
+type FakeIndirectStreamingRuntime struct {
+	*FakeRuntime
 }
 
 // FakeRuntime should implement Runtime.
@@ -98,18 +131,24 @@ func (f *FakeRuntime) ClearCalls() {
 	defer f.Unlock()
 
 	f.CalledFunctions = []string{}
-	f.PodList = []*Pod{}
-	f.AllPodList = []*Pod{}
+	f.PodList = []*FakePod{}
+	f.AllPodList = []*FakePod{}
 	f.APIPodStatus = api.PodStatus{}
 	f.StartedPods = []string{}
 	f.KilledPods = []string{}
 	f.StartedContainers = []string{}
 	f.KilledContainers = []string{}
+	f.RuntimeStatus = nil
 	f.VersionInfo = ""
 	f.RuntimeType = ""
 	f.Err = nil
 	f.InspectErr = nil
 	f.StatusErr = nil
+}
+
+// UpdatePodCIDR fulfills the cri interface.
+func (f *FakeRuntime) UpdatePodCIDR(c string) error {
+	return nil
 }
 
 func (f *FakeRuntime) assertList(expect []string, test []string) error {
@@ -170,26 +209,34 @@ func (f *FakeRuntime) APIVersion() (Version, error) {
 	return &FakeVersion{Version: f.APIVersionInfo}, f.Err
 }
 
-func (f *FakeRuntime) Status() error {
+func (f *FakeRuntime) Status() (*RuntimeStatus, error) {
 	f.Lock()
 	defer f.Unlock()
 
 	f.CalledFunctions = append(f.CalledFunctions, "Status")
-	return f.StatusErr
+	return f.RuntimeStatus, f.StatusErr
 }
 
 func (f *FakeRuntime) GetPods(all bool) ([]*Pod, error) {
 	f.Lock()
 	defer f.Unlock()
 
+	var pods []*Pod
+
 	f.CalledFunctions = append(f.CalledFunctions, "GetPods")
 	if all {
-		return f.AllPodList, f.Err
+		for _, fakePod := range f.AllPodList {
+			pods = append(pods, fakePod.Pod)
+		}
+	} else {
+		for _, fakePod := range f.PodList {
+			pods = append(pods, fakePod.Pod)
+		}
 	}
-	return f.PodList, f.Err
+	return pods, f.Err
 }
 
-func (f *FakeRuntime) SyncPod(pod *api.Pod, _ api.PodStatus, _ *PodStatus, _ []api.Secret, backOff *util.Backoff) (result PodSyncResult) {
+func (f *FakeRuntime) SyncPod(pod *api.Pod, _ api.PodStatus, _ *PodStatus, _ []api.Secret, backOff *flowcontrol.Backoff) (result PodSyncResult) {
 	f.Lock()
 	defer f.Unlock()
 
@@ -205,7 +252,7 @@ func (f *FakeRuntime) SyncPod(pod *api.Pod, _ api.PodStatus, _ *PodStatus, _ []a
 	return
 }
 
-func (f *FakeRuntime) KillPod(pod *api.Pod, runningPod Pod) error {
+func (f *FakeRuntime) KillPod(pod *api.Pod, runningPod Pod, gracePeriodOverride *int64) error {
 	f.Lock()
 	defer f.Unlock()
 
@@ -260,28 +307,33 @@ func (f *FakeRuntime) GetPodStatus(uid types.UID, name, namespace string) (*PodS
 	return &status, f.Err
 }
 
-func (f *FakeRuntime) ExecInContainer(containerID ContainerID, cmd []string, stdin io.Reader, stdout, stderr io.WriteCloser, tty bool) error {
+func (f *FakeDirectStreamingRuntime) ExecInContainer(containerID ContainerID, cmd []string, stdin io.Reader, stdout, stderr io.WriteCloser, tty bool, resize <-chan term.Size, timeout time.Duration) error {
 	f.Lock()
 	defer f.Unlock()
 
 	f.CalledFunctions = append(f.CalledFunctions, "ExecInContainer")
+	f.Args.ContainerID = containerID
+	f.Args.Cmd = cmd
+	f.Args.Stdin = stdin
+	f.Args.Stdout = stdout
+	f.Args.Stderr = stderr
+	f.Args.TTY = tty
+
 	return f.Err
 }
 
-func (f *FakeRuntime) AttachContainer(containerID ContainerID, stdin io.Reader, stdout, stderr io.WriteCloser, tty bool) error {
+func (f *FakeDirectStreamingRuntime) AttachContainer(containerID ContainerID, stdin io.Reader, stdout, stderr io.WriteCloser, tty bool, resize <-chan term.Size) error {
 	f.Lock()
 	defer f.Unlock()
 
 	f.CalledFunctions = append(f.CalledFunctions, "AttachContainer")
+	f.Args.ContainerID = containerID
+	f.Args.Stdin = stdin
+	f.Args.Stdout = stdout
+	f.Args.Stderr = stderr
+	f.Args.TTY = tty
+
 	return f.Err
-}
-
-func (f *FakeRuntime) RunInContainer(containerID ContainerID, cmd []string) ([]byte, error) {
-	f.Lock()
-	defer f.Unlock()
-
-	f.CalledFunctions = append(f.CalledFunctions, "RunInContainer")
-	return []byte{}, f.Err
 }
 
 func (f *FakeRuntime) GetContainerLogs(pod *api.Pod, containerID ContainerID, logOptions *api.PodLogOptions, stdout, stderr io.Writer) (err error) {
@@ -338,18 +390,107 @@ func (f *FakeRuntime) RemoveImage(image ImageSpec) error {
 	return f.Err
 }
 
-func (f *FakeRuntime) PortForward(pod *Pod, port uint16, stream io.ReadWriteCloser) error {
+func (f *FakeDirectStreamingRuntime) PortForward(pod *Pod, port uint16, stream io.ReadWriteCloser) error {
 	f.Lock()
 	defer f.Unlock()
 
 	f.CalledFunctions = append(f.CalledFunctions, "PortForward")
+	f.Args.Pod = pod
+	f.Args.Port = port
+	f.Args.Stream = stream
+
 	return f.Err
 }
 
-func (f *FakeRuntime) GarbageCollect(gcPolicy ContainerGCPolicy) error {
+func (f *FakeRuntime) GetNetNS(containerID ContainerID) (string, error) {
+	f.Lock()
+	defer f.Unlock()
+
+	f.CalledFunctions = append(f.CalledFunctions, "GetNetNS")
+
+	for _, fp := range f.AllPodList {
+		for _, c := range fp.Pod.Containers {
+			if c.ID == containerID {
+				return fp.NetnsPath, nil
+			}
+		}
+	}
+
+	return "", f.Err
+}
+
+func (f *FakeRuntime) GetPodContainerID(pod *Pod) (ContainerID, error) {
+	f.Lock()
+	defer f.Unlock()
+
+	f.CalledFunctions = append(f.CalledFunctions, "GetPodContainerID")
+	return ContainerID{}, f.Err
+}
+
+func (f *FakeRuntime) GarbageCollect(gcPolicy ContainerGCPolicy, ready bool) error {
 	f.Lock()
 	defer f.Unlock()
 
 	f.CalledFunctions = append(f.CalledFunctions, "GarbageCollect")
 	return f.Err
+}
+
+func (f *FakeRuntime) DeleteContainer(containerID ContainerID) error {
+	f.Lock()
+	defer f.Unlock()
+
+	f.CalledFunctions = append(f.CalledFunctions, "DeleteContainer")
+	return f.Err
+}
+
+func (f *FakeRuntime) ImageStats() (*ImageStats, error) {
+	f.Lock()
+	defer f.Unlock()
+
+	f.CalledFunctions = append(f.CalledFunctions, "ImageStats")
+	return nil, f.Err
+}
+
+func (f *FakeIndirectStreamingRuntime) GetExec(id ContainerID, cmd []string, stdin, stdout, stderr, tty bool) (*url.URL, error) {
+	f.Lock()
+	defer f.Unlock()
+
+	f.CalledFunctions = append(f.CalledFunctions, "GetExec")
+	return &url.URL{Host: FakeHost}, f.Err
+}
+
+func (f *FakeIndirectStreamingRuntime) GetAttach(id ContainerID, stdin, stdout, stderr bool) (*url.URL, error) {
+	f.Lock()
+	defer f.Unlock()
+
+	f.CalledFunctions = append(f.CalledFunctions, "GetAttach")
+	return &url.URL{Host: FakeHost}, f.Err
+}
+
+func (f *FakeIndirectStreamingRuntime) GetPortForward(podName, podNamespace string, podUID types.UID) (*url.URL, error) {
+	f.Lock()
+	defer f.Unlock()
+
+	f.CalledFunctions = append(f.CalledFunctions, "GetPortForward")
+	return &url.URL{Host: FakeHost}, f.Err
+}
+
+type FakeContainerCommandRunner struct {
+	// what to return
+	Stdout string
+	Err    error
+
+	// actual values when invoked
+	ContainerID ContainerID
+	Cmd         []string
+}
+
+var _ ContainerCommandRunner = &FakeContainerCommandRunner{}
+
+func (f *FakeContainerCommandRunner) RunInContainer(containerID ContainerID, cmd []string, timeout time.Duration) ([]byte, error) {
+	// record invoked values
+	f.ContainerID = containerID
+	f.Cmd = cmd
+
+	return []byte(f.Stdout), f.Err
 }
