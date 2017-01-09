@@ -1,5 +1,5 @@
 /*
-Copyright 2014 The Kubernetes Authors All rights reserved.
+Copyright 2014 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -23,11 +23,11 @@ import (
 	"strings"
 	"testing"
 
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/kubernetes/pkg/api"
-	"k8s.io/kubernetes/pkg/api/testapi"
 	"k8s.io/kubernetes/pkg/client/restclient"
-	"k8s.io/kubernetes/pkg/client/unversioned/fake"
-	"k8s.io/kubernetes/pkg/runtime"
+	"k8s.io/kubernetes/pkg/client/restclient/fake"
+	cmdtesting "k8s.io/kubernetes/pkg/kubectl/cmd/testing"
 )
 
 func TestValidateAnnotationOverwrites(t *testing.T) {
@@ -116,8 +116,8 @@ func TestParseAnnotations(t *testing.T) {
 			expectErr:      false,
 		},
 		{
-			annotations:    []string{"url=" + testURL, "kubernetes.io/created-by=" + testJSON},
-			expected:       map[string]string{"url": testURL, "kubernetes.io/created-by": testJSON},
+			annotations:    []string{"url=" + testURL, api.CreatedByAnnotation + "=" + testJSON},
+			expected:       map[string]string{"url": testURL, api.CreatedByAnnotation: testJSON},
 			expectedRemove: []string{},
 			scenario:       "add annotations with special characters",
 			expectErr:      false,
@@ -143,15 +143,16 @@ func TestParseAnnotations(t *testing.T) {
 			expectErr:   true,
 		},
 		{
-			annotations: []string{"a="},
-			expectedErr: "invalid annotation format: a=",
-			scenario:    "incorrect annotation input (missing value)",
-			expectErr:   true,
+			annotations:    []string{"a="},
+			expected:       map[string]string{"a": ""},
+			expectedRemove: []string{},
+			scenario:       "add valid annotation with empty value",
+			expectErr:      false,
 		},
 		{
 			annotations: []string{"ab", "a="},
-			expectedErr: "invalid annotation format: ab, a=",
-			scenario:    "incorrect multiple annotation input (missing value)",
+			expectedErr: "invalid annotation format: ab",
+			scenario:    "incorrect annotation input (missing =value)",
 			expectErr:   true,
 		},
 	}
@@ -389,10 +390,10 @@ func TestAnnotateErrors(t *testing.T) {
 	}
 
 	for k, testCase := range testCases {
-		f, tf, _ := NewAPIFactory()
+		f, tf, _, _ := cmdtesting.NewAPIFactory()
 		tf.Printer = &testPrinter{}
 		tf.Namespace = "test"
-		tf.ClientConfig = &restclient.Config{ContentConfig: restclient.ContentConfig{GroupVersion: testapi.Default.GroupVersion()}}
+		tf.ClientConfig = &restclient.Config{ContentConfig: restclient.ContentConfig{GroupVersion: &api.Registry.GroupOrDie(api.GroupName).GroupVersion}}
 
 		buf := bytes.NewBuffer([]byte{})
 		cmd := NewCmdAnnotate(f, buf)
@@ -403,6 +404,9 @@ func TestAnnotateErrors(t *testing.T) {
 		}
 		options := &AnnotateOptions{}
 		err := options.Complete(f, buf, cmd, testCase.args)
+		if err == nil {
+			err = options.Validate()
+		}
 		if !testCase.errFn(err) {
 			t.Errorf("%s: unexpected error: %v", k, err)
 			continue
@@ -419,16 +423,16 @@ func TestAnnotateErrors(t *testing.T) {
 func TestAnnotateObject(t *testing.T) {
 	pods, _, _ := testData()
 
-	f, tf, codec := NewAPIFactory()
+	f, tf, codec, ns := cmdtesting.NewAPIFactory()
 	tf.Printer = &testPrinter{}
 	tf.Client = &fake.RESTClient{
-		Codec: codec,
+		NegotiatedSerializer: ns,
 		Client: fake.CreateHTTPClient(func(req *http.Request) (*http.Response, error) {
 			switch req.Method {
 			case "GET":
 				switch req.URL.Path {
 				case "/namespaces/test/pods/foo":
-					return &http.Response{StatusCode: 200, Body: objBody(codec, &pods.Items[0])}, nil
+					return &http.Response{StatusCode: 200, Header: defaultHeader(), Body: objBody(codec, &pods.Items[0])}, nil
 				default:
 					t.Fatalf("unexpected request: %#v\n%#v", req.URL, req)
 					return nil, nil
@@ -436,7 +440,7 @@ func TestAnnotateObject(t *testing.T) {
 			case "PATCH":
 				switch req.URL.Path {
 				case "/namespaces/test/pods/foo":
-					return &http.Response{StatusCode: 200, Body: objBody(codec, &pods.Items[0])}, nil
+					return &http.Response{StatusCode: 200, Header: defaultHeader(), Body: objBody(codec, &pods.Items[0])}, nil
 				default:
 					t.Fatalf("unexpected request: %#v\n%#v", req.URL, req)
 					return nil, nil
@@ -448,7 +452,7 @@ func TestAnnotateObject(t *testing.T) {
 		}),
 	}
 	tf.Namespace = "test"
-	tf.ClientConfig = &restclient.Config{ContentConfig: restclient.ContentConfig{GroupVersion: testapi.Default.GroupVersion()}}
+	tf.ClientConfig = &restclient.Config{ContentConfig: restclient.ContentConfig{GroupVersion: &api.Registry.GroupOrDie(api.GroupName).GroupVersion}}
 
 	buf := bytes.NewBuffer([]byte{})
 	cmd := NewCmdAnnotate(f, buf)
@@ -458,10 +462,10 @@ func TestAnnotateObject(t *testing.T) {
 	if err := options.Complete(f, buf, cmd, args); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if err := options.Validate(args); err != nil {
+	if err := options.Validate(); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if err := options.RunAnnotate(); err != nil {
+	if err := options.RunAnnotate(f, cmd); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
@@ -469,24 +473,24 @@ func TestAnnotateObject(t *testing.T) {
 func TestAnnotateObjectFromFile(t *testing.T) {
 	pods, _, _ := testData()
 
-	f, tf, codec := NewAPIFactory()
+	f, tf, codec, ns := cmdtesting.NewAPIFactory()
 	tf.Printer = &testPrinter{}
 	tf.Client = &fake.RESTClient{
-		Codec: codec,
+		NegotiatedSerializer: ns,
 		Client: fake.CreateHTTPClient(func(req *http.Request) (*http.Response, error) {
 			switch req.Method {
 			case "GET":
 				switch req.URL.Path {
-				case "/namespaces/test/pods/cassandra":
-					return &http.Response{StatusCode: 200, Body: objBody(codec, &pods.Items[0])}, nil
+				case "/namespaces/test/replicationcontrollers/cassandra":
+					return &http.Response{StatusCode: 200, Header: defaultHeader(), Body: objBody(codec, &pods.Items[0])}, nil
 				default:
 					t.Fatalf("unexpected request: %#v\n%#v", req.URL, req)
 					return nil, nil
 				}
 			case "PATCH":
 				switch req.URL.Path {
-				case "/namespaces/test/pods/cassandra":
-					return &http.Response{StatusCode: 200, Body: objBody(codec, &pods.Items[0])}, nil
+				case "/namespaces/test/replicationcontrollers/cassandra":
+					return &http.Response{StatusCode: 200, Header: defaultHeader(), Body: objBody(codec, &pods.Items[0])}, nil
 				default:
 					t.Fatalf("unexpected request: %#v\n%#v", req.URL, req)
 					return nil, nil
@@ -498,21 +502,50 @@ func TestAnnotateObjectFromFile(t *testing.T) {
 		}),
 	}
 	tf.Namespace = "test"
-	tf.ClientConfig = &restclient.Config{ContentConfig: restclient.ContentConfig{GroupVersion: testapi.Default.GroupVersion()}}
+	tf.ClientConfig = &restclient.Config{ContentConfig: restclient.ContentConfig{GroupVersion: &api.Registry.GroupOrDie(api.GroupName).GroupVersion}}
 
 	buf := bytes.NewBuffer([]byte{})
 	cmd := NewCmdAnnotate(f, buf)
 	cmd.SetOutput(buf)
 	options := &AnnotateOptions{}
-	options.filenames = []string{"../../../examples/cassandra/cassandra.yaml"}
+	options.Filenames = []string{"../../../examples/storage/cassandra/cassandra-controller.yaml"}
 	args := []string{"a=b", "c-"}
 	if err := options.Complete(f, buf, cmd, args); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if err := options.Validate(args); err != nil {
+	if err := options.Validate(); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if err := options.RunAnnotate(); err != nil {
+	if err := options.RunAnnotate(f, cmd); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestAnnotateLocal(t *testing.T) {
+	f, tf, _, ns := cmdtesting.NewAPIFactory()
+	tf.Client = &fake.RESTClient{
+		NegotiatedSerializer: ns,
+		Client: fake.CreateHTTPClient(func(req *http.Request) (*http.Response, error) {
+			t.Fatalf("unexpected request: %s %#v\n%#v", req.Method, req.URL, req)
+			return nil, nil
+		}),
+	}
+	tf.Namespace = "test"
+	tf.ClientConfig = &restclient.Config{ContentConfig: restclient.ContentConfig{GroupVersion: &api.Registry.GroupOrDie(api.GroupName).GroupVersion}}
+
+	buf := bytes.NewBuffer([]byte{})
+	cmd := NewCmdAnnotate(f, buf)
+	cmd.Flags().Set("local", "true")
+	options := &AnnotateOptions{}
+	options.Filenames = []string{"../../../examples/storage/cassandra/cassandra-controller.yaml"}
+	args := []string{"a=b"}
+	if err := options.Complete(f, buf, cmd, args); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if err := options.Validate(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if err := options.RunAnnotate(f, cmd); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
@@ -520,16 +553,16 @@ func TestAnnotateObjectFromFile(t *testing.T) {
 func TestAnnotateMultipleObjects(t *testing.T) {
 	pods, _, _ := testData()
 
-	f, tf, codec := NewAPIFactory()
+	f, tf, codec, ns := cmdtesting.NewAPIFactory()
 	tf.Printer = &testPrinter{}
 	tf.Client = &fake.RESTClient{
-		Codec: codec,
+		NegotiatedSerializer: ns,
 		Client: fake.CreateHTTPClient(func(req *http.Request) (*http.Response, error) {
 			switch req.Method {
 			case "GET":
 				switch req.URL.Path {
 				case "/namespaces/test/pods":
-					return &http.Response{StatusCode: 200, Body: objBody(codec, pods)}, nil
+					return &http.Response{StatusCode: 200, Header: defaultHeader(), Body: objBody(codec, pods)}, nil
 				default:
 					t.Fatalf("unexpected request: %#v\n%#v", req.URL, req)
 					return nil, nil
@@ -537,9 +570,9 @@ func TestAnnotateMultipleObjects(t *testing.T) {
 			case "PATCH":
 				switch req.URL.Path {
 				case "/namespaces/test/pods/foo":
-					return &http.Response{StatusCode: 200, Body: objBody(codec, &pods.Items[0])}, nil
+					return &http.Response{StatusCode: 200, Header: defaultHeader(), Body: objBody(codec, &pods.Items[0])}, nil
 				case "/namespaces/test/pods/bar":
-					return &http.Response{StatusCode: 200, Body: objBody(codec, &pods.Items[1])}, nil
+					return &http.Response{StatusCode: 200, Header: defaultHeader(), Body: objBody(codec, &pods.Items[1])}, nil
 				default:
 					t.Fatalf("unexpected request: %#v\n%#v", req.URL, req)
 					return nil, nil
@@ -551,21 +584,21 @@ func TestAnnotateMultipleObjects(t *testing.T) {
 		}),
 	}
 	tf.Namespace = "test"
-	tf.ClientConfig = &restclient.Config{ContentConfig: restclient.ContentConfig{GroupVersion: testapi.Default.GroupVersion()}}
+	tf.ClientConfig = &restclient.Config{ContentConfig: restclient.ContentConfig{GroupVersion: &api.Registry.GroupOrDie(api.GroupName).GroupVersion}}
 
 	buf := bytes.NewBuffer([]byte{})
 	cmd := NewCmdAnnotate(f, buf)
 	cmd.SetOutput(buf)
+	cmd.Flags().Set("all", "true")
 	options := &AnnotateOptions{}
-	options.all = true
 	args := []string{"pods", "a=b", "c-"}
 	if err := options.Complete(f, buf, cmd, args); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if err := options.Validate(args); err != nil {
+	if err := options.Validate(); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if err := options.RunAnnotate(); err != nil {
+	if err := options.RunAnnotate(f, cmd); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }

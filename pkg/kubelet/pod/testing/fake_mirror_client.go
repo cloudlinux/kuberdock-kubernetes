@@ -1,5 +1,5 @@
 /*
-Copyright 2015 The Kubernetes Authors All rights reserved.
+Copyright 2015 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -19,9 +19,9 @@ package testing
 import (
 	"sync"
 
-	"k8s.io/kubernetes/pkg/api"
+	"k8s.io/apimachinery/pkg/util/sets"
+	"k8s.io/kubernetes/pkg/api/v1"
 	kubecontainer "k8s.io/kubernetes/pkg/kubelet/container"
-	"k8s.io/kubernetes/pkg/util/sets"
 )
 
 type FakeMirrorClient struct {
@@ -41,7 +41,7 @@ func NewFakeMirrorClient() *FakeMirrorClient {
 	return &m
 }
 
-func (fmc *FakeMirrorClient) CreateMirrorPod(pod *api.Pod) error {
+func (fmc *FakeMirrorClient) CreateMirrorPod(pod *v1.Pod) error {
 	fmc.mirrorPodLock.Lock()
 	defer fmc.mirrorPodLock.Unlock()
 	podFullName := kubecontainer.GetPodFullName(pod)

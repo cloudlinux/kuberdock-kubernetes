@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-# Copyright 2014 The Kubernetes Authors All rights reserved.
+# Copyright 2014 The Kubernetes Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -30,10 +30,6 @@ AZURE_USERNAME="${AZURE_USERNAME:-"kube"}"
 
 # Initial number of worker nodes to provision
 NUM_NODES=${NUM_NODES:-3}
-
-# The Azure Active Directoy (AAD) TenantID to which the subscription belongs.
-# This should be a GUID.
-AZURE_TENANT_ID="${AZURE_TENANT_ID:-}"
 
 # The target Azure subscription ID
 # This should be a GUID.

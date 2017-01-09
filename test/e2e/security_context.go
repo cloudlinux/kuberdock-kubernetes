@@ -1,5 +1,5 @@
 /*
-Copyright 2015 The Kubernetes Authors All rights reserved.
+Copyright 2015 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -16,7 +16,7 @@ limitations under the License.
 
 /* This test check that SecurityContext parameters specified at the
  * pod or the container level work as intended. These tests cannot be
- * run when the 'SecurityContextDeny' addmissioin controller is not used
+ * run when the 'SecurityContextDeny' admission controller is not used
  * so they are skipped by default.
  */
 
@@ -25,47 +25,49 @@ package e2e
 import (
 	"fmt"
 
-	"k8s.io/kubernetes/pkg/api"
-	"k8s.io/kubernetes/pkg/util"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/kubernetes/pkg/api/v1"
+	"k8s.io/kubernetes/pkg/util/uuid"
+	"k8s.io/kubernetes/test/e2e/framework"
 
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
 )
 
-func scTestPod(hostIPC bool, hostPID bool) *api.Pod {
-	podName := "security-context-" + string(util.NewUUID())
-	pod := &api.Pod{
-		ObjectMeta: api.ObjectMeta{
-			Name:   podName,
-			Labels: map[string]string{"name": podName},
+func scTestPod(hostIPC bool, hostPID bool) *v1.Pod {
+	podName := "security-context-" + string(uuid.NewUUID())
+	pod := &v1.Pod{
+		ObjectMeta: v1.ObjectMeta{
+			Name:        podName,
+			Labels:      map[string]string{"name": podName},
+			Annotations: map[string]string{},
 		},
-		Spec: api.PodSpec{
-			SecurityContext: &api.PodSecurityContext{
-				HostIPC: hostIPC,
-				HostPID: hostPID,
-			},
-			Containers: []api.Container{
+		Spec: v1.PodSpec{
+			HostIPC:         hostIPC,
+			HostPID:         hostPID,
+			SecurityContext: &v1.PodSecurityContext{},
+			Containers: []v1.Container{
 				{
 					Name:  "test-container",
 					Image: "gcr.io/google_containers/busybox:1.24",
 				},
 			},
-			RestartPolicy: api.RestartPolicyNever,
+			RestartPolicy: v1.RestartPolicyNever,
 		},
 	}
 
 	return pod
 }
 
-var _ = Describe("Security Context [Feature:SecurityContext]", func() {
-	framework := NewDefaultFramework("security-context")
+var _ = framework.KubeDescribe("Security Context [Feature:SecurityContext]", func() {
+	f := framework.NewDefaultFramework("security-context")
 
 	It("should support pod.Spec.SecurityContext.SupplementalGroups", func() {
 		pod := scTestPod(false, false)
 		pod.Spec.Containers[0].Command = []string{"id", "-G"}
 		pod.Spec.SecurityContext.SupplementalGroups = []int64{1234, 5678}
 		groups := []string{"1234", "5678"}
-		framework.TestContainerOutput("pod.Spec.SecurityContext.SupplementalGroups", pod, 0, groups)
+		f.TestContainerOutput("pod.Spec.SecurityContext.SupplementalGroups", pod, 0, groups)
 	})
 
 	It("should support pod.Spec.SecurityContext.RunAsUser", func() {
@@ -74,7 +76,7 @@ var _ = Describe("Security Context [Feature:SecurityContext]", func() {
 		pod.Spec.SecurityContext.RunAsUser = &uid
 		pod.Spec.Containers[0].Command = []string{"sh", "-c", "id -u"}
 
-		framework.TestContainerOutput("pod.Spec.SecurityContext.RunAsUser", pod, 0, []string{
+		f.TestContainerOutput("pod.Spec.SecurityContext.RunAsUser", pod, 0, []string{
 			fmt.Sprintf("%v", uid),
 		})
 	})
@@ -84,91 +86,121 @@ var _ = Describe("Security Context [Feature:SecurityContext]", func() {
 		var uid int64 = 1001
 		var overrideUid int64 = 1002
 		pod.Spec.SecurityContext.RunAsUser = &uid
-		pod.Spec.Containers[0].SecurityContext = new(api.SecurityContext)
+		pod.Spec.Containers[0].SecurityContext = new(v1.SecurityContext)
 		pod.Spec.Containers[0].SecurityContext.RunAsUser = &overrideUid
 		pod.Spec.Containers[0].Command = []string{"sh", "-c", "id -u"}
 
-		framework.TestContainerOutput("pod.Spec.SecurityContext.RunAsUser", pod, 0, []string{
+		f.TestContainerOutput("pod.Spec.SecurityContext.RunAsUser", pod, 0, []string{
 			fmt.Sprintf("%v", overrideUid),
 		})
 	})
 
 	It("should support volume SELinux relabeling", func() {
-		testPodSELinuxLabeling(framework, false, false)
+		testPodSELinuxLabeling(f, false, false)
 	})
 
 	It("should support volume SELinux relabeling when using hostIPC", func() {
-		testPodSELinuxLabeling(framework, true, false)
+		testPodSELinuxLabeling(f, true, false)
 	})
 
 	It("should support volume SELinux relabeling when using hostPID", func() {
-		testPodSELinuxLabeling(framework, false, true)
+		testPodSELinuxLabeling(f, false, true)
 	})
 
+	It("should support seccomp alpha unconfined annotation on the container [Feature:Seccomp]", func() {
+		// TODO: port to SecurityContext as soon as seccomp is out of alpha
+		pod := scTestPod(false, false)
+		pod.Annotations[v1.SeccompContainerAnnotationKeyPrefix+"test-container"] = "unconfined"
+		pod.Annotations[v1.SeccompPodAnnotationKey] = "docker/default"
+		pod.Spec.Containers[0].Command = []string{"grep", "ecc", "/proc/self/status"}
+		f.TestContainerOutput(v1.SeccompPodAnnotationKey, pod, 0, []string{"0"}) // seccomp disabled
+	})
+
+	It("should support seccomp alpha unconfined annotation on the pod [Feature:Seccomp]", func() {
+		// TODO: port to SecurityContext as soon as seccomp is out of alpha
+		pod := scTestPod(false, false)
+		pod.Annotations[v1.SeccompPodAnnotationKey] = "unconfined"
+		pod.Spec.Containers[0].Command = []string{"grep", "ecc", "/proc/self/status"}
+		f.TestContainerOutput(v1.SeccompPodAnnotationKey, pod, 0, []string{"0"}) // seccomp disabled
+	})
+
+	It("should support seccomp alpha docker/default annotation [Feature:Seccomp]", func() {
+		// TODO: port to SecurityContext as soon as seccomp is out of alpha
+		pod := scTestPod(false, false)
+		pod.Annotations[v1.SeccompContainerAnnotationKeyPrefix+"test-container"] = "docker/default"
+		pod.Spec.Containers[0].Command = []string{"grep", "ecc", "/proc/self/status"}
+		f.TestContainerOutput(v1.SeccompPodAnnotationKey, pod, 0, []string{"2"}) // seccomp filtered
+	})
+
+	It("should support seccomp default which is unconfined [Feature:Seccomp]", func() {
+		// TODO: port to SecurityContext as soon as seccomp is out of alpha
+		pod := scTestPod(false, false)
+		pod.Spec.Containers[0].Command = []string{"grep", "ecc", "/proc/self/status"}
+		f.TestContainerOutput(v1.SeccompPodAnnotationKey, pod, 0, []string{"0"}) // seccomp disabled
+	})
 })
 
-func testPodSELinuxLabeling(framework *Framework, hostIPC bool, hostPID bool) {
+func testPodSELinuxLabeling(f *framework.Framework, hostIPC bool, hostPID bool) {
 	// Write and read a file with an empty_dir volume
 	// with a pod with the MCS label s0:c0,c1
 	pod := scTestPod(hostIPC, hostPID)
 	volumeName := "test-volume"
 	mountPath := "/mounted_volume"
-	pod.Spec.Containers[0].VolumeMounts = []api.VolumeMount{
+	pod.Spec.Containers[0].VolumeMounts = []v1.VolumeMount{
 		{
 			Name:      volumeName,
 			MountPath: mountPath,
 		},
 	}
-	pod.Spec.Volumes = []api.Volume{
+	pod.Spec.Volumes = []v1.Volume{
 		{
 			Name: volumeName,
-			VolumeSource: api.VolumeSource{
-				EmptyDir: &api.EmptyDirVolumeSource{
-					Medium: api.StorageMediumDefault,
+			VolumeSource: v1.VolumeSource{
+				EmptyDir: &v1.EmptyDirVolumeSource{
+					Medium: v1.StorageMediumDefault,
 				},
 			},
 		},
 	}
-	pod.Spec.SecurityContext.SELinuxOptions = &api.SELinuxOptions{
+	pod.Spec.SecurityContext.SELinuxOptions = &v1.SELinuxOptions{
 		Level: "s0:c0,c1",
 	}
 	pod.Spec.Containers[0].Command = []string{"sleep", "6000"}
 
-	client := framework.Client.Pods(framework.Namespace.Name)
-	_, err := client.Create(pod)
+	client := f.ClientSet.Core().Pods(f.Namespace.Name)
+	pod, err := client.Create(pod)
 
-	expectNoError(err, "Error creating pod %v", pod)
-	defer client.Delete(pod.Name, nil)
-	expectNoError(waitForPodRunningInNamespace(framework.Client, pod.Name, framework.Namespace.Name))
+	framework.ExpectNoError(err, "Error creating pod %v", pod)
+	framework.ExpectNoError(framework.WaitForPodRunningInNamespace(f.ClientSet, pod))
 
 	testContent := "hello"
 	testFilePath := mountPath + "/TEST"
-	err = framework.WriteFileViaContainer(pod.Name, pod.Spec.Containers[0].Name, testFilePath, testContent)
+	err = f.WriteFileViaContainer(pod.Name, pod.Spec.Containers[0].Name, testFilePath, testContent)
 	Expect(err).To(BeNil())
-	content, err := framework.ReadFileViaContainer(pod.Name, pod.Spec.Containers[0].Name, testFilePath)
+	content, err := f.ReadFileViaContainer(pod.Name, pod.Spec.Containers[0].Name, testFilePath)
 	Expect(err).To(BeNil())
 	Expect(content).To(ContainSubstring(testContent))
 
-	foundPod, err := framework.Client.Pods(framework.Namespace.Name).Get(pod.Name)
+	foundPod, err := f.ClientSet.Core().Pods(f.Namespace.Name).Get(pod.Name, metav1.GetOptions{})
 	Expect(err).NotTo(HaveOccurred())
 
 	// Confirm that the file can be accessed from a second
 	// pod using host_path with the same MCS label
-	volumeHostPath := fmt.Sprintf("%s/pods/%s/volumes/kubernetes.io~empty-dir/%s", testContext.KubeVolumeDir, foundPod.UID, volumeName)
-	By(fmt.Sprintf("confirming a container with the same label can read the file under --volume-dir=%s", testContext.KubeVolumeDir))
+	volumeHostPath := fmt.Sprintf("%s/pods/%s/volumes/kubernetes.io~empty-dir/%s", framework.TestContext.KubeVolumeDir, foundPod.UID, volumeName)
+	By(fmt.Sprintf("confirming a container with the same label can read the file under --volume-dir=%s", framework.TestContext.KubeVolumeDir))
 	pod = scTestPod(hostIPC, hostPID)
 	pod.Spec.NodeName = foundPod.Spec.NodeName
-	volumeMounts := []api.VolumeMount{
+	volumeMounts := []v1.VolumeMount{
 		{
 			Name:      volumeName,
 			MountPath: mountPath,
 		},
 	}
-	volumes := []api.Volume{
+	volumes := []v1.Volume{
 		{
 			Name: volumeName,
-			VolumeSource: api.VolumeSource{
-				HostPath: &api.HostPathVolumeSource{
+			VolumeSource: v1.VolumeSource{
+				HostPath: &v1.HostPathVolumeSource{
 					Path: volumeHostPath,
 				},
 			},
@@ -177,27 +209,26 @@ func testPodSELinuxLabeling(framework *Framework, hostIPC bool, hostPID bool) {
 	pod.Spec.Containers[0].VolumeMounts = volumeMounts
 	pod.Spec.Volumes = volumes
 	pod.Spec.Containers[0].Command = []string{"cat", testFilePath}
-	pod.Spec.SecurityContext.SELinuxOptions = &api.SELinuxOptions{
+	pod.Spec.SecurityContext.SELinuxOptions = &v1.SELinuxOptions{
 		Level: "s0:c0,c1",
 	}
 
-	framework.TestContainerOutput("Pod with same MCS label reading test file", pod, 0, []string{testContent})
+	f.TestContainerOutput("Pod with same MCS label reading test file", pod, 0, []string{testContent})
 	// Confirm that the same pod with a different MCS
 	// label cannot access the volume
 	pod = scTestPod(hostIPC, hostPID)
 	pod.Spec.Volumes = volumes
 	pod.Spec.Containers[0].VolumeMounts = volumeMounts
 	pod.Spec.Containers[0].Command = []string{"sleep", "6000"}
-	pod.Spec.SecurityContext.SELinuxOptions = &api.SELinuxOptions{
+	pod.Spec.SecurityContext.SELinuxOptions = &v1.SELinuxOptions{
 		Level: "s0:c2,c3",
 	}
 	_, err = client.Create(pod)
-	expectNoError(err, "Error creating pod %v", pod)
-	defer client.Delete(pod.Name, nil)
+	framework.ExpectNoError(err, "Error creating pod %v", pod)
 
-	err = framework.WaitForPodRunning(pod.Name)
-	expectNoError(err, "Error waiting for pod to run %v", pod)
+	err = f.WaitForPodRunning(pod.Name)
+	framework.ExpectNoError(err, "Error waiting for pod to run %v", pod)
 
-	content, err = framework.ReadFileViaContainer(pod.Name, "test-container", testFilePath)
+	content, err = f.ReadFileViaContainer(pod.Name, "test-container", testFilePath)
 	Expect(content).NotTo(ContainSubstring(testContent))
 }

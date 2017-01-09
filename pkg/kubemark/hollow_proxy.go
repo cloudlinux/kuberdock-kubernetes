@@ -1,5 +1,5 @@
 /*
-Copyright 2015 The Kubernetes Authors All rights reserved.
+Copyright 2015 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -19,13 +19,14 @@ package kubemark
 import (
 	"time"
 
+	"k8s.io/apimachinery/pkg/types"
 	proxyapp "k8s.io/kubernetes/cmd/kube-proxy/app"
 	"k8s.io/kubernetes/cmd/kube-proxy/app/options"
 	"k8s.io/kubernetes/pkg/api"
+	"k8s.io/kubernetes/pkg/api/v1"
+	clientset "k8s.io/kubernetes/pkg/client/clientset_generated/internalclientset"
 	"k8s.io/kubernetes/pkg/client/record"
-	client "k8s.io/kubernetes/pkg/client/unversioned"
 	proxyconfig "k8s.io/kubernetes/pkg/proxy/config"
-	"k8s.io/kubernetes/pkg/types"
 	"k8s.io/kubernetes/pkg/util"
 	utiliptables "k8s.io/kubernetes/pkg/util/iptables"
 
@@ -51,7 +52,7 @@ func (*FakeProxier) SyncLoop() {
 
 func NewHollowProxyOrDie(
 	nodeName string,
-	client *client.Client,
+	client clientset.Interface,
 	endpointsConfig *proxyconfig.EndpointsConfig,
 	serviceConfig *proxyconfig.ServiceConfig,
 	iptInterface utiliptables.Interface,
@@ -60,16 +61,16 @@ func NewHollowProxyOrDie(
 ) *HollowProxy {
 	// Create and start Hollow Proxy
 	config := options.NewProxyConfig()
-	config.OOMScoreAdj = util.IntPtr(0)
+	config.OOMScoreAdj = util.Int32Ptr(0)
 	config.ResourceContainer = ""
-	config.NodeRef = &api.ObjectReference{
+	config.NodeRef = &v1.ObjectReference{
 		Kind:      "Node",
 		Name:      nodeName,
 		UID:       types.UID(nodeName),
 		Namespace: "",
 	}
 	proxyconfig.NewSourceAPI(
-		client,
+		client.Core().RESTClient(),
 		30*time.Second,
 		serviceConfig.Channel("api"),
 		endpointsConfig.Channel("api"),

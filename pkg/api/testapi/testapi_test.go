@@ -1,5 +1,5 @@
 /*
-Copyright 2015 The Kubernetes Authors All rights reserved.
+Copyright 2015 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -21,8 +21,8 @@ import (
 	"reflect"
 	"testing"
 
-	"k8s.io/kubernetes/pkg/api/unversioned"
-	"k8s.io/kubernetes/pkg/runtime"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 )
 
 // TODO these tests don't add much value for testing things that have groups
@@ -67,10 +67,10 @@ func TestResourcePath(t *testing.T) {
 	}
 }
 
-var status = &unversioned.Status{
-	Status:  unversioned.StatusFailure,
+var status = &metav1.Status{
+	Status:  metav1.StatusFailure,
 	Code:    200,
-	Reason:  unversioned.StatusReasonUnknown,
+	Reason:  metav1.StatusReasonUnknown,
 	Message: "",
 }
 
@@ -81,7 +81,7 @@ func TestV1EncodeDecodeStatus(t *testing.T) {
 	if err != nil {
 		t.Errorf("unexpected error: %v", err)
 	}
-	typeMeta := unversioned.TypeMeta{}
+	typeMeta := metav1.TypeMeta{}
 	if err := json.Unmarshal(encoded, &typeMeta); err != nil {
 		t.Errorf("unexpected error: %v", err)
 	}
@@ -105,7 +105,7 @@ func testEncodeDecodeStatus(t *testing.T, codec runtime.Codec) {
 	if err != nil {
 		t.Errorf("unexpected error: %v", err)
 	}
-	typeMeta := unversioned.TypeMeta{}
+	typeMeta := metav1.TypeMeta{}
 	if err := json.Unmarshal(encoded, &typeMeta); err != nil {
 		t.Errorf("unexpected error: %v", err)
 	}

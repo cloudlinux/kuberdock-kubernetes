@@ -1,5 +1,5 @@
 /*
-Copyright 2015 The Kubernetes Authors All rights reserved.
+Copyright 2015 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -20,40 +20,39 @@ import (
 	"reflect"
 	"testing"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/kubernetes/pkg/api"
 	"k8s.io/kubernetes/pkg/api/testapi"
-	"k8s.io/kubernetes/pkg/api/unversioned"
-	"k8s.io/kubernetes/pkg/apimachinery/registered"
-	"k8s.io/kubernetes/pkg/runtime"
+	"k8s.io/kubernetes/pkg/api/v1"
 	"k8s.io/kubernetes/pkg/securitycontext"
-	//"github.com/ghodss/yaml"
 )
 
 func noDefault(*api.Pod) error { return nil }
 
 func TestDecodeSinglePod(t *testing.T) {
 	grace := int64(30)
-	pod := &api.Pod{
-		TypeMeta: unversioned.TypeMeta{
+	pod := &v1.Pod{
+		TypeMeta: metav1.TypeMeta{
 			APIVersion: "",
 		},
-		ObjectMeta: api.ObjectMeta{
+		ObjectMeta: v1.ObjectMeta{
 			Name:      "test",
 			UID:       "12345",
 			Namespace: "mynamespace",
 		},
-		Spec: api.PodSpec{
-			RestartPolicy:                 api.RestartPolicyAlways,
-			DNSPolicy:                     api.DNSClusterFirst,
+		Spec: v1.PodSpec{
+			RestartPolicy:                 v1.RestartPolicyAlways,
+			DNSPolicy:                     v1.DNSClusterFirst,
 			TerminationGracePeriodSeconds: &grace,
-			Containers: []api.Container{{
+			Containers: []v1.Container{{
 				Name:                   "image",
 				Image:                  "test/image",
 				ImagePullPolicy:        "IfNotPresent",
 				TerminationMessagePath: "/dev/termination-log",
 				SecurityContext:        securitycontext.ValidSecurityContextWithContainerDefaults(),
 			}},
-			SecurityContext: &api.PodSecurityContext{},
+			SecurityContext: &v1.PodSecurityContext{},
 		},
 	}
 	json, err := runtime.Encode(testapi.Default.Codec(), pod)
@@ -71,9 +70,9 @@ func TestDecodeSinglePod(t *testing.T) {
 		t.Errorf("expected:\n%#v\ngot:\n%#v\n%s", pod, podOut, string(json))
 	}
 
-	for _, gv := range registered.EnabledVersionsForGroup(api.GroupName) {
-		s, _ := api.Codecs.SerializerForFileExtension("yaml")
-		encoder := api.Codecs.EncoderForVersion(s, gv)
+	for _, gv := range api.Registry.EnabledVersionsForGroup(v1.GroupName) {
+		info, _ := runtime.SerializerInfoForMediaType(api.Codecs.SupportedMediaTypes(), "application/yaml")
+		encoder := api.Codecs.EncoderForVersion(info.Serializer, gv)
 		yaml, err := runtime.Encode(encoder, pod)
 		if err != nil {
 			t.Errorf("unexpected error: %v", err)
@@ -93,31 +92,31 @@ func TestDecodeSinglePod(t *testing.T) {
 
 func TestDecodePodList(t *testing.T) {
 	grace := int64(30)
-	pod := &api.Pod{
-		TypeMeta: unversioned.TypeMeta{
+	pod := &v1.Pod{
+		TypeMeta: metav1.TypeMeta{
 			APIVersion: "",
 		},
-		ObjectMeta: api.ObjectMeta{
+		ObjectMeta: v1.ObjectMeta{
 			Name:      "test",
 			UID:       "12345",
 			Namespace: "mynamespace",
 		},
-		Spec: api.PodSpec{
-			RestartPolicy:                 api.RestartPolicyAlways,
-			DNSPolicy:                     api.DNSClusterFirst,
+		Spec: v1.PodSpec{
+			RestartPolicy:                 v1.RestartPolicyAlways,
+			DNSPolicy:                     v1.DNSClusterFirst,
 			TerminationGracePeriodSeconds: &grace,
-			Containers: []api.Container{{
+			Containers: []v1.Container{{
 				Name:                   "image",
 				Image:                  "test/image",
 				ImagePullPolicy:        "IfNotPresent",
 				TerminationMessagePath: "/dev/termination-log",
 				SecurityContext:        securitycontext.ValidSecurityContextWithContainerDefaults(),
 			}},
-			SecurityContext: &api.PodSecurityContext{},
+			SecurityContext: &v1.PodSecurityContext{},
 		},
 	}
-	podList := &api.PodList{
-		Items: []api.Pod{*pod},
+	podList := &v1.PodList{
+		Items: []v1.Pod{*pod},
 	}
 	json, err := runtime.Encode(testapi.Default.Codec(), podList)
 	if err != nil {
@@ -134,9 +133,9 @@ func TestDecodePodList(t *testing.T) {
 		t.Errorf("expected:\n%#v\ngot:\n%#v\n%s", podList, &podListOut, string(json))
 	}
 
-	for _, gv := range registered.EnabledVersionsForGroup(api.GroupName) {
-		s, _ := api.Codecs.SerializerForFileExtension("yaml")
-		encoder := api.Codecs.EncoderForVersion(s, gv)
+	for _, gv := range api.Registry.EnabledVersionsForGroup(v1.GroupName) {
+		info, _ := runtime.SerializerInfoForMediaType(api.Codecs.SupportedMediaTypes(), "application/yaml")
+		encoder := api.Codecs.EncoderForVersion(info.Serializer, gv)
 		yaml, err := runtime.Encode(encoder, podList)
 		if err != nil {
 			t.Errorf("unexpected error: %v", err)

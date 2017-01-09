@@ -1,5 +1,5 @@
 /*
-Copyright 2014 The Kubernetes Authors All rights reserved.
+Copyright 2016 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -20,16 +20,29 @@ import (
 	"encoding/json"
 	"time"
 
+	"k8s.io/apimachinery/pkg/openapi"
+
+	"github.com/go-openapi/spec"
 	"github.com/google/gofuzz"
 )
 
 // Time is a wrapper around time.Time which supports correct
 // marshaling to YAML and JSON.  Wrappers are provided for many
 // of the factory methods that the time package offers.
-//
-// +protobuf.options.marshal=false
 type Time struct {
-	time.Time `protobuf:"Timestamp,1,req,name=time"`
+	time.Time `protobuf:"-"`
+}
+
+// DeepCopy returns a deep-copy of the Time value.  The underlying time.Time
+// type is effectively immutable in the time API, so it is safe to
+// copy-by-assign, despite the presence of (unexported) Pointer fields.
+func (t Time) DeepCopy() Time {
+	return t
+}
+
+// String returns the representation of the time.
+func (t Time) String() string {
+	return t.Time.String()
 }
 
 // NewTime returns a wrapped instance of the provided time
@@ -126,6 +139,17 @@ func (t Time) MarshalJSON() ([]byte, error) {
 	}
 
 	return json.Marshal(t.UTC().Format(time.RFC3339))
+}
+
+func (_ Time) OpenAPIDefinition() openapi.OpenAPIDefinition {
+	return openapi.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Type:   []string{"string"},
+				Format: "date-time",
+			},
+		},
+	}
 }
 
 // MarshalQueryParameter converts to a URL query parameter value

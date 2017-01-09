@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Copyright 2015 The Kubernetes Authors All rights reserved.
+# Copyright 2015 The Kubernetes Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -31,17 +31,27 @@ export NUM_NODES=${NUM_NODES:-2}
 export NUM_NODES=${NUM_NODES}
 
 # By default, the cluster will use the etcd installed on master.
-export ETCD_SERVERS=${ETCD_SERVERS:-"http://$MASTER_IP:4001"}
+export ETCD_SERVERS=${ETCD_SERVERS:-"http://$MASTER_IP:2379"}
 
 # define the IP range used for service cluster IPs.
 # according to rfc 1918 ref: https://tools.ietf.org/html/rfc1918 choose a private ip range here.
 export SERVICE_CLUSTER_IP_RANGE=${SERVICE_CLUSTER_IP_RANGE:-"192.168.3.0/24"}
 
+# Optional: Install cluster DNS.
+ENABLE_CLUSTER_DNS="${KUBE_ENABLE_CLUSTER_DNS:-true}"
+# DNS_SERVER_IP must be a IP in SERVICE_CLUSTER_IP_RANGE
+DNS_SERVER_IP=${DNS_SERVER_IP:-"192.168.3.100"}
+DNS_DOMAIN=${DNS_DOMAIN:-"cluster.local"}
+
+# Optional: Install Kubernetes UI
+ENABLE_CLUSTER_UI="${KUBE_ENABLE_CLUSTER_UI:-true}"
+
 # define the IP range used for flannel overlay network, should not conflict with above SERVICE_CLUSTER_IP_RANGE
 export FLANNEL_NET=${FLANNEL_NET:-"172.16.0.0/16"}
 
 # Admission Controllers to invoke prior to persisting objects in cluster
-export ADMISSION_CONTROL=NamespaceLifecycle,NamespaceExists,LimitRanger,ServiceAccount,ResourceQuota,SecurityContextDeny
+# If we included ResourceQuota, we should keep it at the end of the list to prevent incrementing quota usage prematurely.
+export ADMISSION_CONTROL=NamespaceLifecycle,LimitRanger,ServiceAccount,ResourceQuota
 
 # Extra options to set on the Docker command line.
 # This is useful for setting --insecure-registry for local registries.

@@ -1,5 +1,5 @@
 /*
-Copyright 2015 The Kubernetes Authors All rights reserved.
+Copyright 2015 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -29,7 +29,7 @@ import (
 	"reflect"
 	"runtime"
 
-	"k8s.io/kubernetes/pkg/util/net"
+	"k8s.io/apimachinery/pkg/util/net"
 )
 
 // chaosrt provides the ability to perform simulations of HTTP client failures

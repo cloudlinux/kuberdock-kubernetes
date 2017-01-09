@@ -1,5 +1,5 @@
 /*
-Copyright 2015 The Kubernetes Authors All rights reserved.
+Copyright 2015 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -21,7 +21,6 @@ import (
 	"fmt"
 	"io/ioutil"
 	"os"
-	"os/exec"
 	"path"
 	"path/filepath"
 	"strings"
@@ -30,12 +29,14 @@ import (
 )
 
 // This needs to be updated when we cut a new release series.
-const latestReleaseBranch = "release-1.1"
+const latestReleaseBranch = "release-1.5"
 
 var (
-	verbose = flag.Bool("verbose", false, "On verification failure, emit pre-munge and post-munge versions.")
-	verify  = flag.Bool("verify", false, "Exit with status 1 if files would have needed changes but do not change.")
-	rootDir = flag.String("root-dir", "", "Root directory containing documents to be processed.")
+	verbose   = flag.Bool("verbose", false, "On verification failure, emit pre-munge and post-munge versions.")
+	verify    = flag.Bool("verify", false, "Exit with status 1 if files would have needed changes but do not change.")
+	norecurse = flag.Bool("norecurse", false, "Only process the files of --root-dir.")
+	upstream  = flag.String("upstream", "upstream", "The name of the upstream Git remote to pull from")
+	rootDir   = flag.String("root-dir", "", "Root directory containing documents to be processed.")
 	// "repo-root" seems like a dumb name, this is the relative path (from rootDir) to get to the repoRoot
 	relRoot = flag.String("repo-root", "..", `Appended to --root-dir to get the repository root.
 It's done this way so that generally you just have to set --root-dir.
@@ -48,11 +49,6 @@ Examples:
 
 	ErrChangesNeeded = errors.New("mungedocs: changes required")
 
-	// This records the files in the rootDir in upstream/latest-release
-	filesInLatestRelease string
-	// This indicates if the munger is running inside Jenkins
-	inJenkins bool
-
 	// All of the munge operations to perform.
 	// TODO: allow selection from command line. (e.g., just check links in the examples directory.)
 	allMunges = []munge{
@@ -61,7 +57,6 @@ Examples:
 		// Functions which modify state.
 		{"remove-whitespace", updateWhitespace},
 		{"table-of-contents", updateTOC},
-		{"unversioned-warning", updateUnversionedWarning},
 		{"md-links", updateLinks},
 		{"blank-lines-surround-preformatted", updatePreformatted},
 		{"header-lines", updateHeaderLines},
@@ -155,6 +150,16 @@ func (f fileProcessor) visit(path string) error {
 
 func newWalkFunc(fp *fileProcessor, changesNeeded *bool) filepath.WalkFunc {
 	return func(path string, info os.FileInfo, err error) error {
+		stat, err := os.Stat(path)
+		if err != nil {
+			if os.IsNotExist(err) {
+				return nil
+			}
+			return err
+		}
+		if path != *rootDir && stat.IsDir() && *norecurse {
+			return filepath.SkipDir
+		}
 		if err := fp.visit(path); err != nil {
 			*changesNeeded = true
 			if err != ErrChangesNeeded {
@@ -194,7 +199,7 @@ func main() {
 	flag.Parse()
 
 	if *rootDir == "" {
-		fmt.Fprintf(os.Stderr, "usage: %s [--verify] --root-dir <docs root>\n", flag.Arg(0))
+		fmt.Fprintf(os.Stderr, "usage: %s [--help] [--verify] [--norecurse] --root-dir [--skip-munges=<skip list>] [--upstream=<git remote>] <docs root>\n", flag.Arg(0))
 		os.Exit(1)
 	}
 
@@ -203,26 +208,6 @@ func main() {
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "ERROR: %v\n", err)
 		os.Exit(2)
-	}
-
-	absRootDir, err := filepath.Abs(*rootDir)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "ERROR: %v\n", err)
-		os.Exit(2)
-	}
-	inJenkins = len(os.Getenv("JENKINS_HOME")) != 0
-	out, err := exec.Command("git", "ls-tree", "-r", "--name-only", fmt.Sprintf("%s/%s", "upstream", latestReleaseBranch), absRootDir).CombinedOutput()
-	if err != nil {
-		if inJenkins {
-			fmt.Fprintf(os.Stderr, "output: %s,\nERROR: %v\n", out, err)
-			os.Exit(2)
-		} else {
-			fmt.Fprintf(os.Stdout, "output: %s,\nERROR: %v\n", out, err)
-			fmt.Fprintf(os.Stdout, "`git ls-tree -r --name-only upstream/%s failed. We'll ignore this error locally, but Jenkins may pick an error. Munger uses the output of this command to determine in unversioned warning, if it should add a link to the doc in release branch.\n", latestReleaseBranch)
-			filesInLatestRelease = ""
-		}
-	} else {
-		filesInLatestRelease = string(out)
 	}
 
 	fp := fileProcessor{

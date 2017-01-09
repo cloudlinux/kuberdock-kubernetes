@@ -1,5 +1,5 @@
 /*
-Copyright 2014 The Kubernetes Authors All rights reserved.
+Copyright 2014 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -19,13 +19,13 @@ package v1
 import (
 	"time"
 
-	"k8s.io/kubernetes/pkg/api/unversioned"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	apiv1 "k8s.io/kubernetes/pkg/api/v1"
 	"k8s.io/kubernetes/pkg/client/restclient"
 )
 
 type Policy struct {
-	unversioned.TypeMeta `json:",inline"`
+	metav1.TypeMeta `json:",inline"`
 	// Holds the information to configure the fit predicate functions
 	Predicates []PredicatePolicy `json:"predicates"`
 	// Holds the information to configure the priority functions
@@ -139,10 +139,15 @@ type ExtenderArgs struct {
 	Nodes apiv1.NodeList `json:"nodes"`
 }
 
+// FailedNodesMap represents the filtered out nodes, with node names and failure messages
+type FailedNodesMap map[string]string
+
 // ExtenderFilterResult represents the results of a filter call to an extender
 type ExtenderFilterResult struct {
 	// Filtered set of nodes where the pod can be scheduled
 	Nodes apiv1.NodeList `json:"nodes,omitempty"`
+	// Filtered out nodes where the pod can't be scheduled and the failure messages
+	FailedNodes FailedNodesMap `json:"failedNodes,omitempty"`
 	// Error message indicating failure
 	Error string `json:"error,omitempty"`
 }

@@ -1,5 +1,5 @@
 /*
-Copyright 2015 The Kubernetes Authors All rights reserved.
+Copyright 2015 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -17,18 +17,21 @@ limitations under the License.
 package e2e
 
 import (
+	"context"
 	"net/http"
 	"time"
 
+	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/kubernetes/pkg/api"
-	"k8s.io/kubernetes/pkg/labels"
-	"k8s.io/kubernetes/pkg/util/wait"
+	"k8s.io/kubernetes/test/e2e/framework"
+	testutils "k8s.io/kubernetes/test/utils"
 
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
 )
 
-var _ = Describe("Kubernetes Dashboard", func() {
+var _ = framework.KubeDescribe("Kubernetes Dashboard", func() {
 	const (
 		uiServiceName = "kubernetes-dashboard"
 		uiAppName     = uiServiceName
@@ -37,36 +40,45 @@ var _ = Describe("Kubernetes Dashboard", func() {
 		serverStartTimeout = 1 * time.Minute
 	)
 
-	f := NewDefaultFramework(uiServiceName)
+	f := framework.NewDefaultFramework(uiServiceName)
 
 	It("should check that the kubernetes-dashboard instance is alive", func() {
 		By("Checking whether the kubernetes-dashboard service exists.")
-		err := waitForService(f.Client, uiNamespace, uiServiceName, true, poll, serviceStartTimeout)
+		err := framework.WaitForService(f.ClientSet, uiNamespace, uiServiceName, true, framework.Poll, framework.ServiceStartTimeout)
 		Expect(err).NotTo(HaveOccurred())
 
 		By("Checking to make sure the kubernetes-dashboard pods are running")
 		selector := labels.SelectorFromSet(labels.Set(map[string]string{"k8s-app": uiAppName}))
-		err = waitForPodsWithLabelRunning(f.Client, uiNamespace, selector)
+		err = testutils.WaitForPodsWithLabelRunning(f.ClientSet, uiNamespace, selector)
 		Expect(err).NotTo(HaveOccurred())
 
 		By("Checking to make sure we get a response from the kubernetes-dashboard.")
-		err = wait.Poll(poll, serverStartTimeout, func() (bool, error) {
+		err = wait.Poll(framework.Poll, serverStartTimeout, func() (bool, error) {
 			var status int
-			proxyRequest, errProxy := getServicesProxyRequest(f.Client, f.Client.Get())
+			proxyRequest, errProxy := framework.GetServicesProxyRequest(f.ClientSet, f.ClientSet.Core().RESTClient().Get())
 			if errProxy != nil {
-				Logf("Get services proxy request failed: %v", errProxy)
+				framework.Logf("Get services proxy request failed: %v", errProxy)
 			}
+
+			ctx, cancel := context.WithTimeout(context.Background(), framework.SingleCallTimeout)
+			defer cancel()
+
 			// Query against the proxy URL for the kube-ui service.
 			err := proxyRequest.Namespace(uiNamespace).
+				Context(ctx).
 				Name(uiServiceName).
-				Timeout(singleCallTimeout).
+				Timeout(framework.SingleCallTimeout).
 				Do().
 				StatusCode(&status).
 				Error()
-			if status != http.StatusOK {
-				Logf("Unexpected status from kubernetes-dashboard: %v", status)
-			} else if err != nil {
-				Logf("Request to kube-ui failed: %v", err)
+			if err != nil {
+				if ctx.Err() != nil {
+					framework.Failf("Request to kube-ui failed: %v", err)
+					return true, err
+				}
+				framework.Logf("Request to kube-ui failed: %v", err)
+			} else if status != http.StatusOK {
+				framework.Logf("Unexpected status from kubernetes-dashboard: %v", status)
 			}
 			// Don't return err here as it aborts polling.
 			return status == http.StatusOK, nil
@@ -75,9 +87,9 @@ var _ = Describe("Kubernetes Dashboard", func() {
 
 		By("Checking that the ApiServer /ui endpoint redirects to a valid server.")
 		var status int
-		err = f.Client.Get().
+		err = f.ClientSet.Core().RESTClient().Get().
 			AbsPath("/ui").
-			Timeout(singleCallTimeout).
+			Timeout(framework.SingleCallTimeout).
 			Do().
 			StatusCode(&status).
 			Error()

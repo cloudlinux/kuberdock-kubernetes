@@ -1,5 +1,5 @@
 /*
-Copyright 2015 The Kubernetes Authors All rights reserved.
+Copyright 2015 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -17,17 +17,19 @@ limitations under the License.
 package testing
 
 import (
-	"k8s.io/kubernetes/pkg/api"
-	"k8s.io/kubernetes/pkg/api/unversioned"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	apiv1 "k8s.io/kubernetes/pkg/api/v1"
 )
 
 type TestStruct struct {
-	unversioned.TypeMeta `json:",inline"`
-	api.ObjectMeta       `json:"metadata,omitempty"`
-	Key                  string         `json:"Key"`
-	Map                  map[string]int `json:"Map"`
-	StringList           []string       `json:"StringList"`
-	IntList              []int          `json:"IntList"`
+	metav1.TypeMeta `json:",inline"`
+	// +optional
+	apiv1.ObjectMeta `json:"metadata,omitempty"`
+	Key              string         `json:"Key"`
+	Map              map[string]int `json:"Map"`
+	StringList       []string       `json:"StringList"`
+	IntList          []int          `json:"IntList"`
 }
 
-func (obj *TestStruct) GetObjectKind() unversioned.ObjectKind { return &obj.TypeMeta }
+func (obj *TestStruct) GetObjectKind() schema.ObjectKind { return &obj.TypeMeta }

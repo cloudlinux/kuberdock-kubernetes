@@ -1,5 +1,5 @@
 /*
-Copyright 2015 The Kubernetes Authors All rights reserved.
+Copyright 2015 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -26,11 +26,11 @@ import (
 	"strings"
 	"testing"
 
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/util/validation/field"
 	"k8s.io/kubernetes/pkg/api"
-	"k8s.io/kubernetes/pkg/api/unversioned"
 	"k8s.io/kubernetes/pkg/kubectl"
-	"k8s.io/kubernetes/pkg/runtime"
-	"k8s.io/kubernetes/pkg/util/validation/field"
 )
 
 // Based on: https://github.com/openshift/origin/blob/master/pkg/api/compatibility_test.go
@@ -40,7 +40,7 @@ import (
 // keys in the resulting JSON.
 func TestCompatibility(
 	t *testing.T,
-	version unversioned.GroupVersion,
+	version schema.GroupVersion,
 	input []byte,
 	validator func(obj runtime.Object) field.ErrorList,
 	expectedKeys map[string]string,
@@ -88,7 +88,7 @@ func TestCompatibility(
 		keys := strings.Split(absentKey, ".")
 		actualValue, ok, err := getJSONValue(generic, keys...)
 		if err == nil || ok {
-			t.Errorf("Unexpected value found for for key %s: %v", absentKey, actualValue)
+			t.Errorf("Unexpected value found for key %s: %v", absentKey, actualValue)
 			hasError = true
 		}
 	}

@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Copyright 2014 The Kubernetes Authors All rights reserved.
+# Copyright 2014 The Kubernetes Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -18,6 +18,8 @@
 
 [ ! -z ${UTIL_SH_DEBUG+x} ] && set -x
 
+command -v kubectl >/dev/null 2>&1 || { echo >&2 "kubectl not found in path. Aborting."; exit 1; }
+
 KUBE_ROOT=$(dirname "${BASH_SOURCE}")/../..
 readonly ROOT=$(dirname "${BASH_SOURCE}")
 source "$ROOT/${KUBE_CONFIG_FILE:-"config-default.sh"}"
@@ -25,7 +27,7 @@ source "$KUBE_ROOT/cluster/common.sh"
 
 export LIBVIRT_DEFAULT_URI=qemu:///system
 export SERVICE_ACCOUNT_LOOKUP=${SERVICE_ACCOUNT_LOOKUP:-false}
-export ADMISSION_CONTROL=${ADMISSION_CONTROL:-NamespaceLifecycle,LimitRanger,ServiceAccount,ResourceQuota}
+export ADMISSION_CONTROL=${ADMISSION_CONTROL:-NamespaceLifecycle,LimitRanger,ServiceAccount,DefaultStorageClass,ResourceQuota}
 readonly POOL=kubernetes
 readonly POOL_PATH=/var/lib/libvirt/images/kubernetes
 
@@ -56,18 +58,46 @@ function detect-nodes {
   KUBE_NODE_IP_ADDRESSES=("${NODE_IPS[@]}")
 }
 
-function set_service_accounts {
-    SERVICE_ACCOUNT_KEY=${SERVICE_ACCOUNT_KEY:-"/tmp/kube-serviceaccount.key"}
-    # Generate ServiceAccount key if needed
-    if [[ ! -f "${SERVICE_ACCOUNT_KEY}" ]]; then
-      mkdir -p "$(dirname ${SERVICE_ACCOUNT_KEY})"
-      openssl genrsa -out "${SERVICE_ACCOUNT_KEY}" 2048 2>/dev/null
-    fi
+function generate_certs {
+    node_names=("${@}")
+    #Root-CA
+    tempdir=$(mktemp -d)
+    CA_KEY=${CA_KEY:-"$tempdir/ca-key.pem"}
+    CA_CERT=${CA_CERT:-"$tempdir/ca.pem"}
+    openssl genrsa -out "${CA_KEY}" 2048 2>/dev/null
+    openssl req -x509 -new -nodes -key "${CA_KEY}" -days 10000 -out "${CA_CERT}" -subj "/CN=kube-ca"  2>/dev/null
 
+    #API server key pair
+    KUBE_KEY=${KUBE_KEY:-"$tempdir/apiserver-key.pem"}
+    API_SERVER_CERT_REQ=${API_SERVER_CERT_REQ:-"$tempdir/apiserver.csr"}
+    openssl genrsa -out "${KUBE_KEY}" 2048 2>/dev/null
+    KUBERNETES_SVC=${SERVICE_CLUSTER_IP_RANGE%.*}.1 openssl req -new -key "${KUBE_KEY}" -out "${API_SERVER_CERT_REQ}" -subj "/CN=kube-apiserver" -config cluster/libvirt-coreos/openssl.cnf 2>/dev/null
+    KUBE_CERT=${KUBE_CERT:-"$tempdir/apiserver.pem"}
+    KUBERNETES_SVC=${SERVICE_CLUSTER_IP_RANGE%.*}.1 openssl x509 -req -in "${API_SERVER_CERT_REQ}" -CA "${CA_CERT}" -CAkey "${CA_KEY}" -CAcreateserial -out "${KUBE_CERT}" -days 365 -extensions v3_req -extfile  cluster/libvirt-coreos/openssl.cnf 2>/dev/null
+
+    #Copy apiserver and controller tsl assets
     mkdir -p  "$POOL_PATH/kubernetes/certs"
-    cp "${SERVICE_ACCOUNT_KEY}" "$POOL_PATH/kubernetes/certs"
+    cp "${KUBE_CERT}" "$POOL_PATH/kubernetes/certs"
+    cp "${KUBE_KEY}"  "$POOL_PATH/kubernetes/certs"
+    cp "${CA_CERT}" "$POOL_PATH/kubernetes/certs"
+
+    #Generate nodes certificate
+    for (( i = 0 ; i < $NUM_NODES ; i++ )); do
+        openssl genrsa -out $tempdir/${node_names[$i]}-node-key.pem 2048 2>/dev/null
+        cp "$tempdir/${node_names[$i]}-node-key.pem" "$POOL_PATH/kubernetes/certs"
+        WORKER_IP=${NODE_IPS[$i]} openssl req -new -key $tempdir/${node_names[$i]}-node-key.pem -out $tempdir/${node_names[$i]}-node.csr -subj "/CN=${node_names[$i]}" -config  cluster/libvirt-coreos/node-openssl.cnf 2>/dev/null
+        WORKER_IP=${NODE_IPS[$i]} openssl x509 -req -in $tempdir/${node_names[$i]}-node.csr -CA "${CA_CERT}" -CAkey "${CA_KEY}" -CAcreateserial -out $tempdir/${node_names[$i]}-node.pem -days 365 -extensions v3_req -extfile  cluster/libvirt-coreos/node-openssl.cnf 2>/dev/null
+        cp "$tempdir/${node_names[$i]}-node.pem" "$POOL_PATH/kubernetes/certs"
+    done
+    echo "TLS assets generated..."
 }
 
+#Setup registry proxy
+function setup_registry_proxy {
+  if [[ "$ENABLE_CLUSTER_REGISTRY" == "true" ]]; then
+    cp "./cluster/saltbase/salt/kube-registry-proxy/kube-registry-proxy.yaml" "$POOL_PATH/kubernetes/manifests"
+  fi
+}
 
 # Verify prereqs on host machine
 function verify-prereqs {
@@ -130,7 +160,7 @@ function initialize-pool {
       virsh pool-create-as $POOL dir --target "$POOL_PATH"
   fi
 
-  wget -N -P "$ROOT" http://${COREOS_CHANNEL:-alpha}.release.core-os.net/amd64-usr/current/coreos_production_qemu_image.img.bz2
+  wget -N -P "$ROOT" https://${COREOS_CHANNEL:-alpha}.release.core-os.net/amd64-usr/current/coreos_production_qemu_image.img.bz2
   if [[ "$ROOT/coreos_production_qemu_image.img.bz2" -nt "$POOL_PATH/coreos_base.img" ]]; then
       bunzip2 -f -k "$ROOT/coreos_production_qemu_image.img.bz2"
       virsh vol-delete coreos_base.img --pool $POOL 2> /dev/null || true
@@ -154,8 +184,9 @@ function initialize-pool {
 
   mkdir -p "$POOL_PATH/kubernetes/addons"
   if [[ "$ENABLE_CLUSTER_DNS" == "true" ]]; then
-      render-template "$ROOT/skydns-svc.yaml" > "$POOL_PATH/kubernetes/addons/skydns-svc.yaml"
-      render-template "$ROOT/skydns-rc.yaml"  > "$POOL_PATH/kubernetes/addons/skydns-rc.yaml"
+      render-template "$ROOT/namespace.yaml" > "$POOL_PATH/kubernetes/addons/namespace.yaml"
+      render-template "$ROOT/kubedns-svc.yaml" > "$POOL_PATH/kubernetes/addons/kubedns-svc.yaml"
+      render-template "$ROOT/kubedns-controller.yaml"  > "$POOL_PATH/kubernetes/addons/kubedns-controller.yaml"
   fi
 
   virsh pool-refresh $POOL
@@ -179,14 +210,13 @@ function render-template {
 
 function wait-cluster-readiness {
   echo "Wait for cluster readiness"
-  local kubectl="${KUBE_ROOT}/cluster/kubectl.sh"
 
   local timeout=120
   while [[ $timeout -ne 0 ]]; do
-    nb_ready_nodes=$("${kubectl}" get nodes -o go-template="{{range.items}}{{range.status.conditions}}{{.type}}{{end}}:{{end}}" --api-version=v1 2>/dev/null | tr ':' '\n' | grep -c Ready || true)
+    nb_ready_nodes=$(kubectl get nodes -o go-template="{{range.items}}{{range.status.conditions}}{{.type}}{{end}}:{{end}}" --api-version=v1 2>/dev/null | tr ':' '\n' | grep -c Ready || true)
     echo "Nb ready nodes: $nb_ready_nodes / $NUM_NODES"
     if [[ "$nb_ready_nodes" -eq "$NUM_NODES" ]]; then
-        return 0
+      return 0
     fi
 
     timeout=$(($timeout-1))
@@ -200,9 +230,9 @@ function wait-cluster-readiness {
 function kube-up {
   detect-master
   detect-nodes
-  load-or-gen-kube-bearertoken
   initialize-pool keep_base_image
-  set_service_accounts
+  generate_certs "${NODE_NAMES[@]}"
+  setup_registry_proxy
   initialize-network
 
   readonly ssh_keys="$(cat ~/.ssh/*.pub | sed 's/^/  - /')"
@@ -254,8 +284,50 @@ function kube-up {
   echo
   echo "  http://${KUBE_MASTER_IP}:8080"
   echo
-  echo "You can control the Kubernetes cluster with: 'cluster/kubectl.sh'"
+  echo "You can control the Kubernetes cluster with: 'kubectl'"
   echo "You can connect on the master with: 'ssh core@${KUBE_MASTER_IP}'"
+
+  wait-registry-readiness
+
+}
+
+function create_registry_rc() {
+  echo " Create registry replication controller"
+  kubectl create -f $ROOT/registry-rc.yaml
+  local timeout=120
+  while [[ $timeout -ne 0 ]]; do
+    phase=$(kubectl get pods -n kube-system -lk8s-app=kube-registry --output='jsonpath={.items..status.phase}')
+    if [ "$phase" = "Running" ]; then
+      return 0
+    fi
+    timeout=$(($timeout-1))
+    sleep .5
+  done
+}
+
+
+function create_registry_svc() {
+  echo " Create registry service"
+  kubectl create -f "${KUBE_ROOT}/cluster/addons/registry/registry-svc.yaml"
+}
+
+function wait-registry-readiness() {
+  if [[ "$ENABLE_CLUSTER_REGISTRY" != "true" ]]; then
+    return 0
+  fi
+  echo "Wait for registry readiness..."
+  local timeout=120
+  while [[ $timeout -ne 0 ]]; do
+    phase=$(kubectl get namespaces --output=jsonpath='{.items[?(@.metadata.name=="kube-system")].status.phase}')
+    if [ "$phase" = "Active" ]; then
+      create_registry_rc
+      create_registry_svc
+      return 0
+    fi
+    echo "waiting for namespace kube-system"
+    timeout=$(($timeout-1))
+    sleep .5
+  done
 }
 
 # Delete a kubernetes cluster
@@ -345,7 +417,7 @@ function ssh-to-node {
   if [[ -z "$machine" ]]; then
       echo "$node is an unknown machine to ssh to" >&2
   fi
-  ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ControlMaster=no "core@$machine" "$cmd"
+  ssh -o ConnectTimeout=30 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ControlMaster=no "core@$machine" "$cmd"
 }
 
 # Perform preparations required to run e2e tests

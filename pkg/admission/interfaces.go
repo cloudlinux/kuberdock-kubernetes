@@ -1,5 +1,5 @@
 /*
-Copyright 2014 The Kubernetes Authors All rights reserved.
+Copyright 2014 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -17,9 +17,9 @@ limitations under the License.
 package admission
 
 import (
-	"k8s.io/kubernetes/pkg/api/unversioned"
-	"k8s.io/kubernetes/pkg/auth/user"
-	"k8s.io/kubernetes/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apiserver/pkg/authentication/user"
 )
 
 // Attributes is an interface used by AdmissionController to get information about a request
@@ -32,7 +32,7 @@ type Attributes interface {
 	// GetNamespace is the namespace associated with the request (if any)
 	GetNamespace() string
 	// GetResource is the name of the resource being requested.  This is not the kind.  For example: pods
-	GetResource() unversioned.GroupResource
+	GetResource() schema.GroupVersionResource
 	// GetSubresource is the name of the subresource being requested.  This is a different resource, scoped to the parent resource, but it may have a different kind.
 	// For instance, /pods has the resource "pods" and the kind "Pod", while /pods/foo/status has the resource "pods", the sub resource "status", and the kind "Pod"
 	// (because status operates on pods). The binding resource for a pod though may be /pods/foo/binding, which has resource "pods", subresource "binding", and kind "Binding".
@@ -41,8 +41,10 @@ type Attributes interface {
 	GetOperation() Operation
 	// GetObject is the object from the incoming request prior to default values being applied
 	GetObject() runtime.Object
+	// GetOldObject is the existing object. Only populated for UPDATE requests.
+	GetOldObject() runtime.Object
 	// GetKind is the type of object being manipulated.  For example: Pod
-	GetKind() unversioned.GroupKind
+	GetKind() schema.GroupVersionKind
 	// GetUserInfo is information about the requesting user
 	GetUserInfo() user.Info
 }
@@ -67,3 +69,15 @@ const (
 	Delete  Operation = "DELETE"
 	Connect Operation = "CONNECT"
 )
+
+// PluginInitializer is used for initialization of shareable resources between admission plugins.
+// After initialization the resources have to be set separately
+type PluginInitializer interface {
+	Initialize(plugin Interface)
+}
+
+// Validator holds Validate functions, which are responsible for validation of initialized shared resources
+// and should be implemented on admission plugins
+type Validator interface {
+	Validate() error
+}

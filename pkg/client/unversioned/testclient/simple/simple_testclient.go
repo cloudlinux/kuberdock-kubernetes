@@ -1,5 +1,5 @@
 /*
-Copyright 2015 The Kubernetes Authors All rights reserved.
+Copyright 2015 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -24,15 +24,14 @@ import (
 	"strings"
 	"testing"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/kubernetes/pkg/api"
 	"k8s.io/kubernetes/pkg/api/testapi"
-	"k8s.io/kubernetes/pkg/api/unversioned"
 	clientset "k8s.io/kubernetes/pkg/client/clientset_generated/internalclientset"
 	"k8s.io/kubernetes/pkg/client/restclient"
-	client "k8s.io/kubernetes/pkg/client/unversioned"
 	"k8s.io/kubernetes/pkg/fields"
-	"k8s.io/kubernetes/pkg/labels"
-	"k8s.io/kubernetes/pkg/runtime"
 	utiltesting "k8s.io/kubernetes/pkg/util/testing"
 )
 
@@ -54,7 +53,6 @@ type Response struct {
 }
 
 type Client struct {
-	*client.Client
 	Clientset *clientset.Clientset
 	Request   Request
 	Response  Response
@@ -81,27 +79,7 @@ func (c *Client) Setup(t *testing.T) *Client {
 		c.handler.ResponseBody = *responseBody
 	}
 	c.server = httptest.NewServer(c.handler)
-	if c.Client == nil {
-		c.Client = client.NewOrDie(&restclient.Config{
-			Host:          c.server.URL,
-			ContentConfig: restclient.ContentConfig{GroupVersion: testapi.Default.GroupVersion()},
-		})
-
-		// TODO: caesarxuchao: hacky way to specify version of Experimental client.
-		// We will fix this by supporting multiple group versions in Config
-		c.AutoscalingClient = client.NewAutoscalingOrDie(&restclient.Config{
-			Host:          c.server.URL,
-			ContentConfig: restclient.ContentConfig{GroupVersion: testapi.Autoscaling.GroupVersion()},
-		})
-		c.BatchClient = client.NewBatchOrDie(&restclient.Config{
-			Host:          c.server.URL,
-			ContentConfig: restclient.ContentConfig{GroupVersion: testapi.Batch.GroupVersion()},
-		})
-		c.ExtensionsClient = client.NewExtensionsOrDie(&restclient.Config{
-			Host:          c.server.URL,
-			ContentConfig: restclient.ContentConfig{GroupVersion: testapi.Extensions.GroupVersion()},
-		})
-
+	if c.Clientset == nil {
 		c.Clientset = clientset.NewForConfigOrDie(&restclient.Config{Host: c.server.URL})
 	}
 	c.QueryValidator = map[string]func(string, string) bool{}
@@ -110,8 +88,7 @@ func (c *Client) Setup(t *testing.T) *Client {
 
 func (c *Client) Close() {
 	if c.server != nil {
-		// TODO: Uncomment when fix #19254
-		// c.server.Close()
+		c.server.Close()
 	}
 }
 
@@ -163,9 +140,9 @@ func (c *Client) ValidateCommon(t *testing.T, err error) {
 		validator, ok := c.QueryValidator[key]
 		if !ok {
 			switch key {
-			case unversioned.LabelSelectorQueryParam(testapi.Default.GroupVersion().String()):
+			case metav1.LabelSelectorQueryParam(api.Registry.GroupOrDie(api.GroupName).GroupVersion.String()):
 				validator = ValidateLabels
-			case unversioned.FieldSelectorQueryParam(testapi.Default.GroupVersion().String()):
+			case metav1.FieldSelectorQueryParam(api.Registry.GroupOrDie(api.GroupName).GroupVersion.String()):
 				validator = validateFields
 			default:
 				validator = func(a, b string) bool { return a == b }
@@ -221,11 +198,11 @@ func validateFields(a, b string) bool {
 
 func (c *Client) body(t *testing.T, obj runtime.Object, raw *string) *string {
 	if obj != nil {
-		fqKind, err := api.Scheme.ObjectKind(obj)
+		fqKinds, _, err := api.Scheme.ObjectKinds(obj)
 		if err != nil {
 			t.Errorf("unexpected encoding error: %v", err)
 		}
-		groupName := fqKind.GroupVersion().Group
+		groupName := fqKinds[0].GroupVersion().Group
 		if c.ResourceGroup != "" {
 			groupName = c.ResourceGroup
 		}

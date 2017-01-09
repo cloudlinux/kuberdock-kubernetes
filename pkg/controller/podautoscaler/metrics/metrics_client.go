@@ -1,5 +1,5 @@
 /*
-Copyright 2015 The Kubernetes Authors All rights reserved.
+Copyright 2015 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -23,12 +23,34 @@ import (
 	"time"
 
 	"github.com/golang/glog"
-	"k8s.io/kubernetes/pkg/api"
-	clientset "k8s.io/kubernetes/pkg/client/clientset_generated/internalclientset"
-	"k8s.io/kubernetes/pkg/labels"
+	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/kubernetes/pkg/api/v1"
+	"k8s.io/kubernetes/pkg/client/clientset_generated/clientset"
+	v1core "k8s.io/kubernetes/pkg/client/clientset_generated/clientset/typed/core/v1"
 
-	heapster "k8s.io/heapster/api/v1/types"
+	heapster "k8s.io/heapster/metrics/api/v1/types"
+	metricsapi "k8s.io/heapster/metrics/apis/metrics/v1alpha1"
 )
+
+// PodResourceInfo contains pod resourcemetric values as a map from pod names to
+// metric values
+type PodResourceInfo map[string]int64
+
+// PodMetricsInfo contains pod resourcemetric values as a map from pod names to
+// metric values
+type PodMetricsInfo map[string]float64
+
+// MetricsClient knows how to query a remote interface to retrieve container-level
+// resource metrics as well as pod-level arbitrary metrics
+type MetricsClient interface {
+	// GetResourceMetric gets the given resource metric (and an associated oldest timestamp)
+	// for all pods matching the specified selector in the given namespace
+	GetResourceMetric(resource v1.ResourceName, namespace string, selector labels.Selector) (PodResourceInfo, time.Time, error)
+
+	// GetRawMetric gets the given metric (and an associated oldest timestamp)
+	// for all pods matching the specified selector in the given namespace
+	GetRawMetric(metricName string, namespace string, selector labels.Selector) (PodMetricsInfo, time.Time, error)
+}
 
 const (
 	DefaultHeapsterNamespace = "kube-system"
@@ -39,150 +61,86 @@ const (
 
 var heapsterQueryStart = -5 * time.Minute
 
-// MetricsClient is an interface for getting metrics for pods.
-type MetricsClient interface {
-	// GetCPUUtilization returns the average utilization over all pods represented as a percent of requested CPU
-	// (e.g. 70 means that an average pod uses 70% of the requested CPU)
-	// and the time of generation of the oldest of utilization reports for pods.
-	GetCPUUtilization(namespace string, selector labels.Selector) (*int, time.Time, error)
-
-	// GetCustomMetric returns the average value of the given custom metrics from the
-	// pods picked using the namespace and selector passed as arguments.
-	GetCustomMetric(customMetricName string, namespace string, selector labels.Selector) (*float64, time.Time, error)
-}
-
-type intAndFloat struct {
-	intValue   int64
-	floatValue float64
-}
-
-// Aggregates results into ResourceConsumption. Also returns number of pods included in the aggregation.
-type metricAggregator func(heapster.MetricResultList) (intAndFloat, int, time.Time)
-
-type metricDefinition struct {
-	name       string
-	aggregator metricAggregator
-}
-
-// HeapsterMetricsClient is Heapster-based implementation of MetricsClient
 type HeapsterMetricsClient struct {
-	client            clientset.Interface
-	heapsterNamespace string
-	heapsterScheme    string
-	heapsterService   string
-	heapsterPort      string
+	services        v1core.ServiceInterface
+	podsGetter      v1core.PodsGetter
+	heapsterScheme  string
+	heapsterService string
+	heapsterPort    string
 }
 
-var averageFunction = func(metrics heapster.MetricResultList) (intAndFloat, int, time.Time) {
-	sum, count, timestamp := calculateSumFromTimeSample(metrics, time.Minute)
-	result := intAndFloat{0, 0}
-	if count > 0 {
-		result.intValue = sum.intValue / int64(count)
-		result.floatValue = sum.floatValue / float64(count)
-	}
-	return result, count, timestamp
-}
-
-var heapsterCpuUsageMetricDefinition = metricDefinition{"cpu-usage", averageFunction}
-
-func getHeapsterCustomMetricDefinition(metricName string) metricDefinition {
-	return metricDefinition{"custom/" + metricName, averageFunction}
-}
-
-// NewHeapsterMetricsClient returns a new instance of Heapster-based implementation of MetricsClient interface.
-func NewHeapsterMetricsClient(client clientset.Interface, namespace, scheme, service, port string) *HeapsterMetricsClient {
+func NewHeapsterMetricsClient(client clientset.Interface, namespace, scheme, service, port string) MetricsClient {
 	return &HeapsterMetricsClient{
-		client:            client,
-		heapsterNamespace: namespace,
-		heapsterScheme:    scheme,
-		heapsterService:   service,
-		heapsterPort:      port,
+		services:        client.Core().Services(namespace),
+		podsGetter:      client.Core(),
+		heapsterScheme:  scheme,
+		heapsterService: service,
+		heapsterPort:    port,
 	}
 }
 
-func (h *HeapsterMetricsClient) GetCPUUtilization(namespace string, selector labels.Selector) (*int, time.Time, error) {
-	avgConsumption, avgRequest, timestamp, err := h.GetCpuConsumptionAndRequestInMillis(namespace, selector)
+func (h *HeapsterMetricsClient) GetResourceMetric(resource v1.ResourceName, namespace string, selector labels.Selector) (PodResourceInfo, time.Time, error) {
+	metricPath := fmt.Sprintf("/apis/metrics/v1alpha1/namespaces/%s/pods", namespace)
+	params := map[string]string{"labelSelector": selector.String()}
+
+	resultRaw, err := h.services.
+		ProxyGet(h.heapsterScheme, h.heapsterService, h.heapsterPort, metricPath, params).
+		DoRaw()
 	if err != nil {
-		return nil, time.Time{}, fmt.Errorf("failed to get CPU consumption and request: %v", err)
+		return nil, time.Time{}, fmt.Errorf("failed to get heapster service: %v", err)
 	}
-	utilization := int((avgConsumption * 100) / avgRequest)
-	return &utilization, timestamp, nil
-}
 
-func (h *HeapsterMetricsClient) GetCpuConsumptionAndRequestInMillis(namespace string, selector labels.Selector) (avgConsumption int64,
-	avgRequest int64, timestamp time.Time, err error) {
+	glog.V(4).Infof("Heapster metrics result: %s", string(resultRaw))
 
-	podList, err := h.client.Core().Pods(namespace).
-		List(api.ListOptions{LabelSelector: selector})
-
+	metrics := metricsapi.PodMetricsList{}
+	err = json.Unmarshal(resultRaw, &metrics)
 	if err != nil {
-		return 0, 0, time.Time{}, fmt.Errorf("failed to get pod list: %v", err)
+		return nil, time.Time{}, fmt.Errorf("failed to unmarshal heapster response: %v", err)
 	}
-	podNames := []string{}
-	requestSum := int64(0)
-	missing := false
-	for _, pod := range podList.Items {
-		if pod.Status.Phase == api.PodPending {
-			// Skip pending pods.
-			continue
-		}
 
-		podNames = append(podNames, pod.Name)
-		for _, container := range pod.Spec.Containers {
-			containerRequest := container.Resources.Requests[api.ResourceCPU]
-			if containerRequest.Amount != nil {
-				requestSum += containerRequest.MilliValue()
-			} else {
+	if len(metrics.Items) == 0 {
+		return nil, time.Time{}, fmt.Errorf("no metrics returned from heapster")
+	}
+
+	res := make(PodResourceInfo, len(metrics.Items))
+
+	for _, m := range metrics.Items {
+		podSum := int64(0)
+		missing := len(m.Containers) == 0
+		for _, c := range m.Containers {
+			resValue, found := c.Usage[v1.ResourceName(resource)]
+			if !found {
 				missing = true
+				glog.V(2).Infof("missing resource metric %v for container %s in pod %s/%s", resource, c.Name, namespace, m.Name)
+				continue
 			}
+			podSum += resValue.MilliValue()
+		}
+
+		if !missing {
+			res[m.Name] = int64(podSum)
 		}
 	}
-	if len(podNames) == 0 && len(podList.Items) > 0 {
-		return 0, 0, time.Time{}, fmt.Errorf("no running pods")
-	}
-	if missing || requestSum == 0 {
-		return 0, 0, time.Time{}, fmt.Errorf("some pods do not have request for cpu")
-	}
-	glog.V(4).Infof("%s %s - sum of CPU requested: %d", namespace, selector, requestSum)
-	requestAvg := requestSum / int64(len(podList.Items))
-	// Consumption is already averaged and in millis.
-	consumption, timestamp, err := h.getForPods(heapsterCpuUsageMetricDefinition, namespace, podNames)
-	if err != nil {
-		return 0, 0, time.Time{}, err
-	}
-	return consumption.intValue, requestAvg, timestamp, nil
+
+	timestamp := metrics.Items[0].Timestamp.Time
+
+	return res, timestamp, nil
 }
 
-// GetCustomMetric returns the average value of the given custom metric from the
-// pods picked using the namespace and selector passed as arguments.
-func (h *HeapsterMetricsClient) GetCustomMetric(customMetricName string, namespace string, selector labels.Selector) (*float64, time.Time, error) {
-	metricSpec := getHeapsterCustomMetricDefinition(customMetricName)
-
-	podList, err := h.client.Core().Pods(namespace).List(api.ListOptions{LabelSelector: selector})
-
+func (h *HeapsterMetricsClient) GetRawMetric(metricName string, namespace string, selector labels.Selector) (PodMetricsInfo, time.Time, error) {
+	podList, err := h.podsGetter.Pods(namespace).List(v1.ListOptions{LabelSelector: selector.String()})
 	if err != nil {
-		return nil, time.Time{}, fmt.Errorf("failed to get pod list: %v", err)
-	}
-	podNames := []string{}
-	for _, pod := range podList.Items {
-		if pod.Status.Phase == api.PodPending {
-			// Skip pending pods.
-			continue
-		}
-		podNames = append(podNames, pod.Name)
-	}
-	if len(podNames) == 0 && len(podList.Items) > 0 {
-		return nil, time.Time{}, fmt.Errorf("no running pods")
+		return nil, time.Time{}, fmt.Errorf("failed to get pod list while fetching metrics: %v", err)
 	}
 
-	value, timestamp, err := h.getForPods(metricSpec, namespace, podNames)
-	if err != nil {
-		return nil, time.Time{}, err
+	if len(podList.Items) == 0 {
+		return nil, time.Time{}, fmt.Errorf("no pods matched the provided selector")
 	}
-	return &value.floatValue, timestamp, nil
-}
 
-func (h *HeapsterMetricsClient) getForPods(metricSpec metricDefinition, namespace string, podNames []string) (*intAndFloat, time.Time, error) {
+	podNames := make([]string, len(podList.Items))
+	for i, pod := range podList.Items {
+		podNames[i] = pod.Name
+	}
 
 	now := time.Now()
 
@@ -190,79 +148,79 @@ func (h *HeapsterMetricsClient) getForPods(metricSpec metricDefinition, namespac
 	metricPath := fmt.Sprintf("/api/v1/model/namespaces/%s/pod-list/%s/metrics/%s",
 		namespace,
 		strings.Join(podNames, ","),
-		metricSpec.name)
+		metricName)
 
-	resultRaw, err := h.client.Core().Services(h.heapsterNamespace).
+	resultRaw, err := h.services.
 		ProxyGet(h.heapsterScheme, h.heapsterService, h.heapsterPort, metricPath, map[string]string{"start": startTime.Format(time.RFC3339)}).
 		DoRaw()
-
 	if err != nil {
-		return nil, time.Time{}, fmt.Errorf("failed to get pods metrics: %v", err)
+		return nil, time.Time{}, fmt.Errorf("failed to get heapster service: %v", err)
 	}
 
 	var metrics heapster.MetricResultList
 	err = json.Unmarshal(resultRaw, &metrics)
 	if err != nil {
-		return nil, time.Time{}, fmt.Errorf("failed to unmarshall heapster response: %v", err)
+		return nil, time.Time{}, fmt.Errorf("failed to unmarshal heapster response: %v", err)
 	}
 
 	glog.V(4).Infof("Heapster metrics result: %s", string(resultRaw))
 
-	sum, count, timestamp := metricSpec.aggregator(metrics)
-	if count != len(podNames) {
-		return nil, time.Time{}, fmt.Errorf("metrics obtained for %d/%d of pods", count, len(podNames))
+	if len(metrics.Items) != len(podNames) {
+		// if we get too many metrics or two few metrics, we have no way of knowing which metric goes to which pod
+		// (note that Heapster returns *empty* metric items when a pod does not exist or have that metric, so this
+		// does not cover the "missing metric entry" case)
+		return nil, time.Time{}, fmt.Errorf("requested metrics for %v pods, got metrics for %v", len(podNames), len(metrics.Items))
 	}
 
-	return &sum, timestamp, nil
+	var timestamp *time.Time
+	res := make(PodMetricsInfo, len(metrics.Items))
+	for i, podMetrics := range metrics.Items {
+		val, podTimestamp, hadMetrics := collapseTimeSamples(podMetrics, time.Minute)
+		if hadMetrics {
+			res[podNames[i]] = val
+			if timestamp == nil || podTimestamp.Before(*timestamp) {
+				timestamp = &podTimestamp
+			}
+		}
+	}
+
+	if timestamp == nil {
+		timestamp = &time.Time{}
+	}
+
+	return res, *timestamp, nil
 }
 
-func calculateSumFromTimeSample(metrics heapster.MetricResultList, duration time.Duration) (sum intAndFloat, count int, timestamp time.Time) {
-	sum = intAndFloat{0, 0}
-	count = 0
-	timestamp = time.Time{}
-	var oldest *time.Time // creation time of the oldest of used samples across pods
-	oldest = nil
-	for _, metrics := range metrics.Items {
-		var newest *heapster.MetricPoint // creation time of the newest sample for pod
-		newest = nil
-		for i, metricPoint := range metrics.Metrics {
-			if newest == nil || newest.Timestamp.Before(metricPoint.Timestamp) {
-				newest = &metrics.Metrics[i]
-			}
-		}
-		if newest != nil {
-			if oldest == nil || newest.Timestamp.Before(*oldest) {
-				oldest = &newest.Timestamp
-			}
-			intervalSum := intAndFloat{0, 0}
-			intSumCount := 0
-			floatSumCount := 0
-			for _, metricPoint := range metrics.Metrics {
-				if metricPoint.Timestamp.Add(duration).After(newest.Timestamp) {
-					intervalSum.intValue += int64(metricPoint.Value)
-					intSumCount++
-					if metricPoint.FloatValue != nil {
-						intervalSum.floatValue += *metricPoint.FloatValue
-						floatSumCount++
-					}
-				}
-			}
-			if newest.FloatValue == nil {
-				if intSumCount > 0 {
-					sum.intValue += int64(intervalSum.intValue / int64(intSumCount))
-					sum.floatValue += float64(intervalSum.intValue / int64(intSumCount))
-				}
-			} else {
-				if floatSumCount > 0 {
-					sum.intValue += int64(intervalSum.floatValue / float64(floatSumCount))
-					sum.floatValue += intervalSum.floatValue / float64(floatSumCount)
-				}
-			}
-			count++
+func collapseTimeSamples(metrics heapster.MetricResult, duration time.Duration) (float64, time.Time, bool) {
+	floatSum := float64(0)
+	intSum := int64(0)
+	intSumCount := 0
+	floatSumCount := 0
+
+	var newest *heapster.MetricPoint // creation time of the newest sample for this pod
+	for i, metricPoint := range metrics.Metrics {
+		if newest == nil || newest.Timestamp.Before(metricPoint.Timestamp) {
+			newest = &metrics.Metrics[i]
 		}
 	}
-	if oldest != nil {
-		timestamp = *oldest
+	if newest != nil {
+		for _, metricPoint := range metrics.Metrics {
+			if metricPoint.Timestamp.Add(duration).After(newest.Timestamp) {
+				intSum += int64(metricPoint.Value)
+				intSumCount++
+				if metricPoint.FloatValue != nil {
+					floatSum += *metricPoint.FloatValue
+					floatSumCount++
+				}
+			}
+		}
+
+		if newest.FloatValue != nil {
+			return floatSum / float64(floatSumCount), newest.Timestamp, true
+		} else {
+			return float64(intSum / int64(intSumCount)), newest.Timestamp, true
+		}
 	}
-	return sum, count, timestamp
+
+	return 0, time.Time{}, false
 }

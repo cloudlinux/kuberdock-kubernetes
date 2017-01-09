@@ -1,5 +1,5 @@
 /*
-Copyright 2015 The Kubernetes Authors All rights reserved.
+Copyright 2015 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -45,10 +45,6 @@ func TestGoodLinks(t *testing.T) {
 		expected string
 	}{
 		{"", ""},
-		{"[README](https://github.com/kubernetes/kubernetes/tree/master/README.md)",
-			"[README](README.md)"},
-		{"[README](../README.md)",
-			"[README](README.md)"},
 		{"[README](https://lwn.net)",
 			"[README](https://lwn.net)"},
 		// _ to -

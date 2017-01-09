@@ -1,5 +1,5 @@
 /*
-Copyright 2015 The Kubernetes Authors All rights reserved.
+Copyright 2015 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -20,33 +20,48 @@ import (
 	"fmt"
 	"time"
 
-	"k8s.io/kubernetes/pkg/api"
-	client "k8s.io/kubernetes/pkg/client/unversioned"
+	"k8s.io/kubernetes/pkg/api/v1"
+	"k8s.io/kubernetes/pkg/client/clientset_generated/clientset"
+	"k8s.io/kubernetes/test/e2e/framework"
 
 	. "github.com/onsi/ginkgo"
 )
 
-const (
-	maxRetries    = 6
-	sleepDuration = 10 * time.Second
-)
+var _ = framework.KubeDescribe("Cadvisor", func() {
 
-var _ = Describe("Cadvisor", func() {
-
-	f := NewDefaultFramework("cadvisor")
+	f := framework.NewDefaultFramework("cadvisor")
 
 	It("should be healthy on every node.", func() {
-		CheckCadvisorHealthOnAllNodes(f.Client, 5*time.Minute)
+		CheckCadvisorHealthOnAllNodes(f.ClientSet, 5*time.Minute)
 	})
 })
 
-func CheckCadvisorHealthOnAllNodes(c *client.Client, timeout time.Duration) {
+func CheckCadvisorHealthOnAllNodes(c clientset.Interface, timeout time.Duration) {
 	// It should be OK to list unschedulable Nodes here.
 	By("getting list of nodes")
-	nodeList, err := c.Nodes().List(api.ListOptions{})
-	expectNoError(err)
+	nodeList, err := c.Core().Nodes().List(v1.ListOptions{})
+	framework.ExpectNoError(err)
 	var errors []error
-	retries := maxRetries
+
+	// returns maxRetries, sleepDuration
+	readConfig := func() (int, time.Duration) {
+		// Read in configuration settings, reasonable defaults.
+		retry := framework.TestContext.Cadvisor.MaxRetries
+		if framework.TestContext.Cadvisor.MaxRetries == 0 {
+			retry = 6
+			framework.Logf("Overriding default retry value of zero to %d", retry)
+		}
+
+		sleepDurationMS := framework.TestContext.Cadvisor.SleepDurationMS
+		if sleepDurationMS == 0 {
+			sleepDurationMS = 10000
+			framework.Logf("Overriding default milliseconds value of zero to %d", sleepDurationMS)
+		}
+
+		return retry, time.Duration(sleepDurationMS) * time.Millisecond
+	}
+
+	maxRetries, sleepDuration := readConfig()
 	for {
 		errors = []error{}
 		for _, node := range nodeList.Items {
@@ -54,7 +69,7 @@ func CheckCadvisorHealthOnAllNodes(c *client.Client, timeout time.Duration) {
 			// Here, we access '/stats/' REST endpoint on the kubelet which polls cadvisor internally.
 			statsResource := fmt.Sprintf("api/v1/proxy/nodes/%s/stats/", node.Name)
 			By(fmt.Sprintf("Querying stats from node %s using url %s", node.Name, statsResource))
-			_, err = c.Get().AbsPath(statsResource).Timeout(timeout).Do().Raw()
+			_, err = c.Core().RESTClient().Get().AbsPath(statsResource).Timeout(timeout).Do().Raw()
 			if err != nil {
 				errors = append(errors, err)
 			}
@@ -62,11 +77,11 @@ func CheckCadvisorHealthOnAllNodes(c *client.Client, timeout time.Duration) {
 		if len(errors) == 0 {
 			return
 		}
-		if retries--; retries <= 0 {
+		if maxRetries--; maxRetries <= 0 {
 			break
 		}
-		Logf("failed to retrieve kubelet stats -\n %v", errors)
+		framework.Logf("failed to retrieve kubelet stats -\n %v", errors)
 		time.Sleep(sleepDuration)
 	}
-	Failf("Failed after retrying %d times for cadvisor to be healthy on all nodes. Errors:\n%v", maxRetries, errors)
+	framework.Failf("Failed after retrying %d times for cadvisor to be healthy on all nodes. Errors:\n%v", maxRetries, errors)
 }

@@ -1,5 +1,5 @@
 /*
-Copyright 2015 The Kubernetes Authors All rights reserved.
+Copyright 2015 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -21,11 +21,11 @@ import (
 	"strconv"
 	"testing"
 
-	"k8s.io/kubernetes/pkg/api"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/kubernetes/pkg/api/testapi"
+	"k8s.io/kubernetes/pkg/api/v1"
 	kubecontainer "k8s.io/kubernetes/pkg/kubelet/container"
 	"k8s.io/kubernetes/pkg/kubelet/util/format"
-	"k8s.io/kubernetes/pkg/runtime"
 	"k8s.io/kubernetes/pkg/util/intstr"
 )
 
@@ -33,37 +33,52 @@ func TestLabels(t *testing.T) {
 	restartCount := 5
 	deletionGracePeriod := int64(10)
 	terminationGracePeriod := int64(10)
-	lifecycle := &api.Lifecycle{
+	lifecycle := &v1.Lifecycle{
 		// Left PostStart as nil
-		PreStop: &api.Handler{
-			Exec: &api.ExecAction{
+		PreStop: &v1.Handler{
+			Exec: &v1.ExecAction{
 				Command: []string{"action1", "action2"},
 			},
-			HTTPGet: &api.HTTPGetAction{
+			HTTPGet: &v1.HTTPGetAction{
 				Path:   "path",
 				Host:   "host",
 				Port:   intstr.FromInt(8080),
 				Scheme: "scheme",
 			},
-			TCPSocket: &api.TCPSocketAction{
+			TCPSocket: &v1.TCPSocketAction{
 				Port: intstr.FromString("80"),
 			},
 		},
 	}
-	container := &api.Container{
-		Name: "test_container",
+	containerPorts := []v1.ContainerPort{
+		{
+			Name:          "http",
+			HostPort:      80,
+			ContainerPort: 8080,
+			Protocol:      v1.ProtocolTCP,
+		},
+		{
+			Name:          "https",
+			HostPort:      443,
+			ContainerPort: 6443,
+			Protocol:      v1.ProtocolTCP,
+		},
+	}
+	container := &v1.Container{
+		Name:  "test_container",
+		Ports: containerPorts,
 		TerminationMessagePath: "/somepath",
 		Lifecycle:              lifecycle,
 	}
-	pod := &api.Pod{
-		ObjectMeta: api.ObjectMeta{
+	pod := &v1.Pod{
+		ObjectMeta: v1.ObjectMeta{
 			Name:      "test_pod",
 			Namespace: "test_pod_namespace",
 			UID:       "test_pod_uid",
 			DeletionGracePeriodSeconds: &deletionGracePeriod,
 		},
-		Spec: api.PodSpec{
-			Containers:                    []api.Container{*container},
+		Spec: v1.PodSpec{
+			Containers:                    []v1.Container{*container},
 			TerminationGracePeriodSeconds: &terminationGracePeriod,
 		},
 	}
@@ -78,6 +93,7 @@ func TestLabels(t *testing.T) {
 		RestartCount:           restartCount,
 		TerminationMessagePath: container.TerminationMessagePath,
 		PreStopHandler:         container.Lifecycle.PreStop,
+		Ports:                  containerPorts,
 	}
 
 	// Test whether we can get right information from label

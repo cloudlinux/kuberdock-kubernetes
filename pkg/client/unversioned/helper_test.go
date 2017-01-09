@@ -1,5 +1,5 @@
 /*
-Copyright 2014 The Kubernetes Authors All rights reserved.
+Copyright 2014 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -23,10 +23,12 @@ import (
 	"reflect"
 	"testing"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/kubernetes/pkg/api"
 	"k8s.io/kubernetes/pkg/api/testapi"
-	"k8s.io/kubernetes/pkg/api/unversioned"
 	"k8s.io/kubernetes/pkg/client/restclient"
-	"k8s.io/kubernetes/pkg/runtime"
 )
 
 func TestSetKubernetesDefaults(t *testing.T) {
@@ -40,18 +42,16 @@ func TestSetKubernetesDefaults(t *testing.T) {
 			restclient.Config{
 				APIPath: "/api",
 				ContentConfig: restclient.ContentConfig{
-					GroupVersion: testapi.Default.GroupVersion(),
-					Codec:        testapi.Default.Codec(),
+					GroupVersion:         &api.Registry.GroupOrDie(api.GroupName).GroupVersion,
+					NegotiatedSerializer: testapi.Default.NegotiatedSerializer(),
 				},
-				QPS:   5,
-				Burst: 10,
 			},
 			false,
 		},
 		// Add this test back when we fixed config and SetKubernetesDefaults
 		// {
 		// 	restclient.Config{
-		// 		GroupVersion: &unversioned.GroupVersion{Group: "not.a.group", Version: "not_an_api"},
+		// 		GroupVersion: &schema.GroupVersion{Group: "not.a.group", Version: "not_an_api"},
 		// 	},
 		// 	restclient.Config{},
 		// 	true,
@@ -79,12 +79,12 @@ func TestSetKubernetesDefaults(t *testing.T) {
 
 func TestHelperGetServerAPIVersions(t *testing.T) {
 	expect := []string{"v1", "v2", "v3"}
-	APIVersions := unversioned.APIVersions{Versions: expect}
+	APIVersions := metav1.APIVersions{Versions: expect}
 	expect = append(expect, "group1/v1", "group1/v2", "group2/v1", "group2/v2")
-	APIGroupList := unversioned.APIGroupList{
-		Groups: []unversioned.APIGroup{
+	APIGroupList := metav1.APIGroupList{
+		Groups: []metav1.APIGroup{
 			{
-				Versions: []unversioned.GroupVersionForDiscovery{
+				Versions: []metav1.GroupVersionForDiscovery{
 					{
 						GroupVersion: "group1/v1",
 					},
@@ -94,7 +94,7 @@ func TestHelperGetServerAPIVersions(t *testing.T) {
 				},
 			},
 			{
-				Versions: []unversioned.GroupVersionForDiscovery{
+				Versions: []metav1.GroupVersionForDiscovery{
 					{
 						GroupVersion: "group2/v1",
 					},
@@ -124,9 +124,8 @@ func TestHelperGetServerAPIVersions(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 		w.Write(output)
 	}))
-	// TODO: Uncomment when fix #19254
-	// defer server.Close()
-	got, err := restclient.ServerAPIVersions(&restclient.Config{Host: server.URL, ContentConfig: restclient.ContentConfig{GroupVersion: &unversioned.GroupVersion{Group: "invalid version", Version: "one"}, Codec: testapi.Default.Codec()}})
+	defer server.Close()
+	got, err := restclient.ServerAPIVersions(&restclient.Config{Host: server.URL, ContentConfig: restclient.ContentConfig{GroupVersion: &schema.GroupVersion{Group: "invalid version", Version: "one"}, NegotiatedSerializer: testapi.Default.NegotiatedSerializer()}})
 	if err != nil {
 		t.Fatalf("unexpected encoding error: %v", err)
 	}
@@ -137,11 +136,15 @@ func TestHelperGetServerAPIVersions(t *testing.T) {
 
 func TestSetsCodec(t *testing.T) {
 	testCases := map[string]struct {
-		Err    bool
-		Prefix string
-		Codec  runtime.Codec
+		Err                  bool
+		Prefix               string
+		NegotiatedSerializer runtime.NegotiatedSerializer
 	}{
-		testapi.Default.GroupVersion().Version: {false, "/api/" + testapi.Default.GroupVersion().Version, testapi.Default.Codec()},
+		api.Registry.GroupOrDie(api.GroupName).GroupVersion.Version: {
+			Err:                  false,
+			Prefix:               "/api/" + api.Registry.GroupOrDie(api.GroupName).GroupVersion.Version,
+			NegotiatedSerializer: testapi.Default.NegotiatedSerializer(),
+		},
 		// Add this test back when we fixed config and SetKubernetesDefaults
 		// "invalidVersion":                       {true, "", nil},
 	}
@@ -149,7 +152,7 @@ func TestSetsCodec(t *testing.T) {
 		conf := &restclient.Config{
 			Host: "127.0.0.1",
 			ContentConfig: restclient.ContentConfig{
-				GroupVersion: &unversioned.GroupVersion{Version: version},
+				GroupVersion: &schema.GroupVersion{Version: version},
 			},
 		}
 
@@ -172,7 +175,7 @@ func TestSetsCodec(t *testing.T) {
 		if e, a := expected.Prefix, versionedPath; e != a {
 			t.Errorf("expected %#v, got %#v", e, a)
 		}
-		if e, a := expected.Codec, conf.Codec; !reflect.DeepEqual(e, a) {
+		if e, a := expected.NegotiatedSerializer, conf.NegotiatedSerializer; !reflect.DeepEqual(e, a) {
 			t.Errorf("expected %#v, got %#v", e, a)
 		}
 	}

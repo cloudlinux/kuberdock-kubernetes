@@ -1,5 +1,5 @@
 /*
-Copyright 2015 The Kubernetes Authors All rights reserved.
+Copyright 2015 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -23,24 +23,30 @@ import (
 	"strconv"
 	"testing"
 
-	docker "github.com/fsouza/go-dockerclient"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/kubernetes/cmd/kubeadm/app/apis/kubeadm"
 	"k8s.io/kubernetes/pkg/api"
 	"k8s.io/kubernetes/pkg/api/resource"
 	"k8s.io/kubernetes/pkg/api/testapi"
-	"k8s.io/kubernetes/pkg/api/unversioned"
+	"k8s.io/kubernetes/pkg/apis/autoscaling"
+	"k8s.io/kubernetes/pkg/apis/batch"
+	"k8s.io/kubernetes/pkg/apis/certificates"
 	"k8s.io/kubernetes/pkg/apis/extensions"
+	"k8s.io/kubernetes/pkg/apis/policy"
+	"k8s.io/kubernetes/pkg/apis/rbac"
 	"k8s.io/kubernetes/pkg/fields"
-	"k8s.io/kubernetes/pkg/labels"
-	"k8s.io/kubernetes/pkg/runtime"
-	"k8s.io/kubernetes/pkg/types"
 	"k8s.io/kubernetes/pkg/util/intstr"
 
 	"github.com/google/gofuzz"
 )
 
 // FuzzerFor can randomly populate api objects that are destined for version.
-func FuzzerFor(t *testing.T, version unversioned.GroupVersion, src rand.Source) *fuzz.Fuzzer {
-	f := fuzz.New().NilChance(.5).NumElements(1, 1)
+func FuzzerFor(t *testing.T, version schema.GroupVersion, src rand.Source) *fuzz.Fuzzer {
+	f := fuzz.New().NilChance(.5).NumElements(0, 1)
 	if src != nil {
 		f.RandSource(src)
 	}
@@ -65,7 +71,7 @@ func FuzzerFor(t *testing.T, version unversioned.GroupVersion, src rand.Source) 
 			j.APIVersion = ""
 			j.Kind = ""
 		},
-		func(j *unversioned.TypeMeta, c fuzz.Continue) {
+		func(j *metav1.TypeMeta, c fuzz.Continue) {
 			// We have to customize the randomization of TypeMetas because their
 			// APIVersion and Kind must remain blank in memory.
 			j.APIVersion = ""
@@ -81,7 +87,7 @@ func FuzzerFor(t *testing.T, version unversioned.GroupVersion, src rand.Source) 
 			var sec, nsec int64
 			c.Fuzz(&sec)
 			c.Fuzz(&nsec)
-			j.CreationTimestamp = unversioned.Unix(sec, nsec).Rfc3339Copy()
+			j.CreationTimestamp = metav1.Unix(sec, nsec).Rfc3339Copy()
 		},
 		func(j *api.ObjectReference, c fuzz.Continue) {
 			// We have to customize the randomization of TypeMetas because their
@@ -93,7 +99,7 @@ func FuzzerFor(t *testing.T, version unversioned.GroupVersion, src rand.Source) 
 			j.ResourceVersion = strconv.FormatUint(c.RandUint64(), 10)
 			j.FieldPath = c.RandString()
 		},
-		func(j *unversioned.ListMeta, c fuzz.Continue) {
+		func(j *metav1.ListMeta, c fuzz.Continue) {
 			j.ResourceVersion = strconv.FormatUint(c.RandUint64(), 10)
 			j.SelfLink = c.RandString()
 		},
@@ -125,6 +131,9 @@ func FuzzerFor(t *testing.T, version unversioned.GroupVersion, src rand.Source) 
 			if s.SecurityContext == nil {
 				s.SecurityContext = new(api.PodSecurityContext)
 			}
+			if s.Affinity == nil {
+				s.Affinity = new(api.Affinity)
+			}
 		},
 		func(j *api.PodPhase, c fuzz.Continue) {
 			statuses := []api.PodPhase{api.PodPending, api.PodRunning, api.PodFailed, api.PodUnknown}
@@ -148,18 +157,18 @@ func FuzzerFor(t *testing.T, version unversioned.GroupVersion, src rand.Source) 
 			} else {
 				rollingUpdate := extensions.RollingUpdateDeployment{}
 				if c.RandBool() {
-					rollingUpdate.MaxUnavailable = intstr.FromInt(int(c.RandUint64()))
-					rollingUpdate.MaxSurge = intstr.FromInt(int(c.RandUint64()))
+					rollingUpdate.MaxUnavailable = intstr.FromInt(int(c.Rand.Int31()))
+					rollingUpdate.MaxSurge = intstr.FromInt(int(c.Rand.Int31()))
 				} else {
-					rollingUpdate.MaxSurge = intstr.FromString(fmt.Sprintf("%d%%", c.RandUint64()))
+					rollingUpdate.MaxSurge = intstr.FromString(fmt.Sprintf("%d%%", c.Rand.Int31()))
 				}
 				j.RollingUpdate = &rollingUpdate
 			}
 		},
-		func(j *extensions.JobSpec, c fuzz.Continue) {
+		func(j *batch.JobSpec, c fuzz.Continue) {
 			c.FuzzNoCustom(j) // fuzz self without calling this function again
-			completions := int(c.Rand.Int31())
-			parallelism := int(c.Rand.Int31())
+			completions := int32(c.Rand.Int31())
+			parallelism := int32(c.Rand.Int31())
 			j.Completions = &completions
 			j.Parallelism = &parallelism
 			if c.Rand.Int31()%2 == 0 {
@@ -167,6 +176,18 @@ func FuzzerFor(t *testing.T, version unversioned.GroupVersion, src rand.Source) 
 			} else {
 				j.ManualSelector = nil
 			}
+		},
+		func(sj *batch.CronJobSpec, c fuzz.Continue) {
+			c.FuzzNoCustom(sj)
+			suspend := c.RandBool()
+			sj.Suspend = &suspend
+			sds := int64(c.RandUint64())
+			sj.StartingDeadlineSeconds = &sds
+			sj.Schedule = c.RandString()
+		},
+		func(cp *batch.ConcurrencyPolicy, c fuzz.Continue) {
+			policies := []batch.ConcurrencyPolicy{batch.AllowConcurrent, batch.ForbidConcurrent, batch.ReplaceConcurrent}
+			*cp = policies[c.Rand.Intn(len(policies))]
 		},
 		func(j *api.List, c fuzz.Continue) {
 			c.FuzzNoCustom(j) // fuzz self without calling this function again
@@ -180,7 +201,8 @@ func FuzzerFor(t *testing.T, version unversioned.GroupVersion, src rand.Source) 
 			if true { //c.RandBool() {
 				*j = &runtime.Unknown{
 					// We do not set TypeMeta here because it is not carried through a round trip
-					RawJSON: []byte(`{"apiVersion":"unknown.group/unknown","kind":"Something","someKey":"someValue"}`),
+					Raw:         []byte(`{"apiVersion":"unknown.group/unknown","kind":"Something","someKey":"someValue"}`),
+					ContentType: runtime.ContentTypeJSON,
 				}
 			} else {
 				types := []runtime.Object{&api.Pod{}, &api.ReplicationController{}}
@@ -189,25 +211,12 @@ func FuzzerFor(t *testing.T, version unversioned.GroupVersion, src rand.Source) 
 				*j = t
 			}
 		},
-		func(pb map[docker.Port][]docker.PortBinding, c fuzz.Continue) {
-			// This is necessary because keys with nil values get omitted.
-			// TODO: Is this a bug?
-			pb[docker.Port(c.RandString())] = []docker.PortBinding{
-				{c.RandString(), c.RandString()},
-				{c.RandString(), c.RandString()},
-			}
-		},
-		func(pm map[string]docker.PortMapping, c fuzz.Continue) {
-			// This is necessary because keys with nil values get omitted.
-			// TODO: Is this a bug?
-			pm[c.RandString()] = docker.PortMapping{
-				c.RandString(): c.RandString(),
-			}
-		},
 		func(q *api.ResourceRequirements, c fuzz.Continue) {
 			randomQuantity := func() resource.Quantity {
 				var q resource.Quantity
 				c.Fuzz(&q)
+				// precalc the string for benchmarking purposes
+				_ = q.String()
 				return q
 			}
 			q.Limits = make(api.ResourceList)
@@ -250,14 +259,59 @@ func FuzzerFor(t *testing.T, version unversioned.GroupVersion, src rand.Source) 
 			policies := []api.RestartPolicy{api.RestartPolicyAlways, api.RestartPolicyNever, api.RestartPolicyOnFailure}
 			*rp = policies[c.Rand.Intn(len(policies))]
 		},
-		// Only api.DownwardAPIVolumeFile needs to have a specific func since FieldRef has to be
+		// api.DownwardAPIVolumeFile needs to have a specific func since FieldRef has to be
 		// defaulted to a version otherwise roundtrip will fail
-		// For the remaining volume plugins the default fuzzer is enough.
 		func(m *api.DownwardAPIVolumeFile, c fuzz.Continue) {
 			m.Path = c.RandString()
 			versions := []string{"v1"}
+			m.FieldRef = &api.ObjectFieldSelector{}
 			m.FieldRef.APIVersion = versions[c.Rand.Intn(len(versions))]
 			m.FieldRef.FieldPath = c.RandString()
+			c.Fuzz(m.Mode)
+			if m.Mode != nil {
+				*m.Mode &= 0777
+			}
+		},
+		func(s *api.SecretVolumeSource, c fuzz.Continue) {
+			c.FuzzNoCustom(s) // fuzz self without calling this function again
+
+			// DefaultMode should always be set, it has a default
+			// value and it is expected to be between 0 and 0777
+			var mode int32
+			c.Fuzz(&mode)
+			mode &= 0777
+			s.DefaultMode = &mode
+		},
+		func(cm *api.ConfigMapVolumeSource, c fuzz.Continue) {
+			c.FuzzNoCustom(cm) // fuzz self without calling this function again
+
+			// DefaultMode should always be set, it has a default
+			// value and it is expected to be between 0 and 0777
+			var mode int32
+			c.Fuzz(&mode)
+			mode &= 0777
+			cm.DefaultMode = &mode
+		},
+		func(d *api.DownwardAPIVolumeSource, c fuzz.Continue) {
+			c.FuzzNoCustom(d) // fuzz self without calling this function again
+
+			// DefaultMode should always be set, it has a default
+			// value and it is expected to be between 0 and 0777
+			var mode int32
+			c.Fuzz(&mode)
+			mode &= 0777
+			d.DefaultMode = &mode
+		},
+		func(k *api.KeyToPath, c fuzz.Continue) {
+			c.FuzzNoCustom(k) // fuzz self without calling this function again
+			k.Key = c.RandString()
+			k.Path = c.RandString()
+
+			// Mode is not mandatory, but if it is set, it should be
+			// a value between 0 and 0777
+			if k.Mode != nil {
+				*k.Mode &= 0777
+			}
 		},
 		func(vs *api.VolumeSource, c fuzz.Continue) {
 			// Exactly one of the fields must be set.
@@ -314,7 +368,7 @@ func FuzzerFor(t *testing.T, version unversioned.GroupVersion, src rand.Source) 
 				ev.ValueFrom = &api.EnvVarSource{}
 				ev.ValueFrom.FieldRef = &api.ObjectFieldSelector{}
 
-				var versions []unversioned.GroupVersion
+				var versions []schema.GroupVersion
 				for _, testGroup := range testapi.Groups {
 					versions = append(versions, *testGroup.GroupVersion())
 				}
@@ -322,6 +376,17 @@ func FuzzerFor(t *testing.T, version unversioned.GroupVersion, src rand.Source) 
 				ev.ValueFrom.FieldRef.APIVersion = versions[c.Rand.Intn(len(versions))].String()
 				ev.ValueFrom.FieldRef.FieldPath = c.RandString()
 			}
+		},
+		func(ev *api.EnvFromSource, c fuzz.Continue) {
+			if c.RandBool() {
+				ev.Prefix = "p_"
+			}
+			if c.RandBool() {
+				c.Fuzz(&ev.ConfigMapRef)
+			}
+		},
+		func(cm *api.ConfigMapEnvSource, c fuzz.Continue) {
+			c.FuzzNoCustom(cm) // fuzz self without calling this function again
 		},
 		func(sc *api.SecurityContext, c fuzz.Continue) {
 			c.FuzzNoCustom(sc) // fuzz self without calling this function again
@@ -343,6 +408,20 @@ func FuzzerFor(t *testing.T, version unversioned.GroupVersion, src rand.Source) 
 			c.FuzzNoCustom(s) // fuzz self without calling this function again
 			s.Type = api.SecretTypeOpaque
 		},
+		func(r *api.RBDVolumeSource, c fuzz.Continue) {
+			r.RBDPool = c.RandString()
+			if r.RBDPool == "" {
+				r.RBDPool = "rbd"
+			}
+			r.RadosUser = c.RandString()
+			if r.RadosUser == "" {
+				r.RadosUser = "admin"
+			}
+			r.Keyring = c.RandString()
+			if r.Keyring == "" {
+				r.Keyring = "/etc/ceph/keyring"
+			}
+		},
 		func(pv *api.PersistentVolume, c fuzz.Continue) {
 			c.FuzzNoCustom(pv) // fuzz self without calling this function again
 			types := []api.PersistentVolumePhase{api.VolumeAvailable, api.VolumePending, api.VolumeBound, api.VolumeReleased, api.VolumeFailed}
@@ -353,8 +432,22 @@ func FuzzerFor(t *testing.T, version unversioned.GroupVersion, src rand.Source) 
 		},
 		func(pvc *api.PersistentVolumeClaim, c fuzz.Continue) {
 			c.FuzzNoCustom(pvc) // fuzz self without calling this function again
-			types := []api.PersistentVolumeClaimPhase{api.ClaimBound, api.ClaimPending}
+			types := []api.PersistentVolumeClaimPhase{api.ClaimBound, api.ClaimPending, api.ClaimLost}
 			pvc.Status.Phase = types[c.Rand.Intn(len(types))]
+		},
+		func(obj *api.AzureDiskVolumeSource, c fuzz.Continue) {
+			if obj.CachingMode == nil {
+				obj.CachingMode = new(api.AzureDataDiskCachingMode)
+				*obj.CachingMode = api.AzureDataDiskCachingNone
+			}
+			if obj.FSType == nil {
+				obj.FSType = new(string)
+				*obj.FSType = "ext4"
+			}
+			if obj.ReadOnly == nil {
+				obj.ReadOnly = new(bool)
+				*obj.ReadOnly = false
+			}
 		},
 		func(s *api.NamespaceSpec, c fuzz.Continue) {
 			s.Finalizers = []api.FinalizerName{api.FinalizerKubernetes}
@@ -391,20 +484,12 @@ func FuzzerFor(t *testing.T, version unversioned.GroupVersion, src rand.Source) 
 			c.FuzzNoCustom(s)
 			s.Allocatable = s.Capacity
 		},
-		func(s *extensions.APIVersion, c fuzz.Continue) {
-			// We can't use c.RandString() here because it may generate empty
-			// string, which will cause tests failure.
-			s.APIGroup = "something"
-		},
-		func(s *extensions.HorizontalPodAutoscalerSpec, c fuzz.Continue) {
+		func(s *autoscaling.HorizontalPodAutoscalerSpec, c fuzz.Continue) {
 			c.FuzzNoCustom(s) // fuzz self without calling this function again
-			minReplicas := int(c.Rand.Int31())
+			minReplicas := int32(c.Rand.Int31())
 			s.MinReplicas = &minReplicas
-			s.CPUUtilization = &extensions.CPUTargetUtilization{TargetPercentage: int(int32(c.RandUint64()))}
-		},
-		func(s *extensions.SubresourceReference, c fuzz.Continue) {
-			c.FuzzNoCustom(s) // fuzz self without calling this function again
-			s.Subresource = "scale"
+			targetCpu := int32(c.RandUint64())
+			s.TargetCPUUtilizationPercentage = &targetCpu
 		},
 		func(psp *extensions.PodSecurityPolicySpec, c fuzz.Continue) {
 			c.FuzzNoCustom(psp) // fuzz self without calling this function again
@@ -418,19 +503,74 @@ func FuzzerFor(t *testing.T, version unversioned.GroupVersion, src rand.Source) 
 			// TODO: Implement a fuzzer to generate valid keys, values and operators for
 			// selector requirements.
 			if s.Status.Selector != nil {
-				s.Status.Selector = &unversioned.LabelSelector{
+				s.Status.Selector = &metav1.LabelSelector{
 					MatchLabels: map[string]string{
 						"testlabelkey": "testlabelval",
 					},
-					MatchExpressions: []unversioned.LabelSelectorRequirement{
+					MatchExpressions: []metav1.LabelSelectorRequirement{
 						{
 							Key:      "testkey",
-							Operator: unversioned.LabelSelectorOpIn,
+							Operator: metav1.LabelSelectorOpIn,
 							Values:   []string{"val1", "val2", "val3"},
 						},
 					},
 				}
 			}
+		},
+		func(r *rbac.RoleRef, c fuzz.Continue) {
+			c.FuzzNoCustom(r) // fuzz self without calling this function again
+
+			// match defaulter
+			if len(r.APIGroup) == 0 {
+				r.APIGroup = rbac.GroupName
+			}
+		},
+		func(r *runtime.RawExtension, c fuzz.Continue) {
+			// Pick an arbitrary type and fuzz it
+			types := []runtime.Object{&api.Pod{}, &extensions.Deployment{}, &api.Service{}}
+			obj := types[c.Rand.Intn(len(types))]
+			c.Fuzz(obj)
+
+			// Find a codec for converting the object to raw bytes.  This is necessary for the
+			// api version and kind to be correctly set be serialization.
+			var codec runtime.Codec
+			switch obj.(type) {
+			case *api.Pod:
+				codec = testapi.Default.Codec()
+			case *extensions.Deployment:
+				codec = testapi.Extensions.Codec()
+			case *api.Service:
+				codec = testapi.Default.Codec()
+			default:
+				t.Errorf("Failed to find codec for object type: %T", obj)
+				return
+			}
+
+			// Convert the object to raw bytes
+			bytes, err := runtime.Encode(codec, obj)
+			if err != nil {
+				t.Errorf("Failed to encode object: %v", err)
+				return
+			}
+
+			// Set the bytes field on the RawExtension
+			r.Raw = bytes
+		},
+		func(obj *kubeadm.MasterConfiguration, c fuzz.Continue) {
+			c.FuzzNoCustom(obj)
+			obj.KubernetesVersion = "v10"
+			obj.API.Port = 20
+			obj.Networking.ServiceSubnet = "foo"
+			obj.Networking.DNSDomain = "foo"
+			obj.Discovery.Token = &kubeadm.TokenDiscovery{}
+		},
+		func(s *policy.PodDisruptionBudgetStatus, c fuzz.Continue) {
+			c.FuzzNoCustom(s) // fuzz self without calling this function again
+			s.PodDisruptionsAllowed = int32(c.Rand.Intn(2))
+		},
+		func(obj *certificates.CertificateSigningRequestSpec, c fuzz.Continue) {
+			c.FuzzNoCustom(obj) // fuzz self without calling this function again
+			obj.Usages = []certificates.KeyUsage{certificates.UsageKeyEncipherment}
 		},
 	)
 	return f

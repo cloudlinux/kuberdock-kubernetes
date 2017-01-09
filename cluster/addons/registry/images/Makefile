@@ -1,4 +1,4 @@
-# Copyright 2016 The Kubernetes Authors All rights reserved.
+# Copyright 2016 The Kubernetes Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -14,11 +14,11 @@
 
 .PHONY: build push vet test clean
 
-TAG = 0.3
+TAG = 0.4
 REPO = gcr.io/google_containers/kube-registry-proxy
 
 build:
-	docker build -t $(REPO):$(TAG) .
+	docker build --pull -t $(REPO):$(TAG) .
 
 push:
-	gcloud docker push $(REPO):$(TAG)
+	gcloud docker -- push $(REPO):$(TAG)

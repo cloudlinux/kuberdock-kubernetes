@@ -1,5 +1,5 @@
 /*
-Copyright 2015 The Kubernetes Authors All rights reserved.
+Copyright 2015 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -23,8 +23,8 @@ import (
 	"github.com/evanphx/json-patch"
 	"github.com/golang/glog"
 
+	"k8s.io/apimachinery/pkg/util/yaml"
 	"k8s.io/kubernetes/pkg/util/strategicpatch"
-	"k8s.io/kubernetes/pkg/util/yaml"
 )
 
 // Delta represents a change between two JSON documents.
@@ -67,7 +67,7 @@ func RequireKeyUnchanged(key string) PreconditionFunc {
 	}
 }
 
-// RequireKeyUnchanged creates a precondition function that fails
+// RequireMetadataKeyUnchanged creates a precondition function that fails
 // if the metadata.key is present in the diff (indicating its value
 // has changed).
 func RequireMetadataKeyUnchanged(key string) PreconditionFunc {

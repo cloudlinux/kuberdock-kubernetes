@@ -1,5 +1,5 @@
 /*
-Copyright 2015 The Kubernetes Authors All rights reserved.
+Copyright 2015 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -23,15 +23,17 @@ import (
 	"io/ioutil"
 	"os"
 	"path"
+	"path/filepath"
 	"sort"
 	"strings"
 
 	appcschema "github.com/appc/spec/schema"
+	appctypes "github.com/appc/spec/schema/types"
 	rktapi "github.com/coreos/rkt/api/v1alpha"
-	"github.com/fsouza/go-dockerclient"
+	dockertypes "github.com/docker/engine-api/types"
 	"github.com/golang/glog"
 	"golang.org/x/net/context"
-	"k8s.io/kubernetes/pkg/api"
+	"k8s.io/kubernetes/pkg/api/v1"
 	"k8s.io/kubernetes/pkg/credentialprovider"
 	kubecontainer "k8s.io/kubernetes/pkg/kubelet/container"
 	"k8s.io/kubernetes/pkg/util/parsers"
@@ -43,14 +45,18 @@ import (
 //
 // http://issue.k8s.io/7203
 //
-func (r *Runtime) PullImage(image kubecontainer.ImageSpec, pullSecrets []api.Secret) error {
+func (r *Runtime) PullImage(image kubecontainer.ImageSpec, pullSecrets []v1.Secret) (string, error) {
 	img := image.Image
 	// TODO(yifan): The credential operation is a copy from dockertools package,
 	// Need to resolve the code duplication.
-	repoToPull, _ := parsers.ParseImageName(img)
+	repoToPull, _, _, err := parsers.ParseImageName(img)
+	if err != nil {
+		return "", err
+	}
+
 	keyring, err := credentialprovider.MakeDockerKeyring(pullSecrets, r.dockerKeyring)
 	if err != nil {
-		return err
+		return "", err
 	}
 
 	creds, ok := keyring.Lookup(repoToPull)
@@ -58,27 +64,45 @@ func (r *Runtime) PullImage(image kubecontainer.ImageSpec, pullSecrets []api.Sec
 		glog.V(1).Infof("Pulling image %s without credentials", img)
 	}
 
-	// Let's update a json.
-	// TODO(yifan): Find a way to feed this to rkt.
-	if err := r.writeDockerAuthConfig(img, creds); err != nil {
-		return err
+	userConfigDir, err := ioutil.TempDir("", "rktnetes-user-config-dir-")
+	if err != nil {
+		return "", fmt.Errorf("rkt: Cannot create a temporary user-config directory: %v", err)
+	}
+	defer os.RemoveAll(userConfigDir)
+
+	config := *r.config
+	config.UserConfigDir = userConfigDir
+
+	if err := r.writeDockerAuthConfig(img, creds, userConfigDir); err != nil {
+		return "", err
 	}
 
-	if _, err := r.runCommand("fetch", dockerPrefix+img); err != nil {
+	// Today, `--no-store` will fetch the remote image regardless of whether the content of the image
+	// has changed or not. This causes performance downgrades when the image tag is ':latest' and
+	// the image pull policy is 'always'. The issue is tracked in https://github.com/coreos/rkt/issues/2937.
+	if _, err := r.cli.RunCommand(&config, "fetch", "--no-store", dockerPrefix+img); err != nil {
 		glog.Errorf("Failed to fetch: %v", err)
-		return err
+		return "", err
 	}
-	return nil
+	return r.getImageID(img)
 }
 
-func (r *Runtime) IsImagePresent(image kubecontainer.ImageSpec) (bool, error) {
+func (r *Runtime) GetImageRef(image kubecontainer.ImageSpec) (string, error) {
 	images, err := r.listImages(image.Image, false)
-	return len(images) > 0, err
+	if err != nil {
+		return "", err
+	}
+	if len(images) == 0 {
+		return "", nil
+	}
+	return images[0].Id, nil
 }
 
 // ListImages lists all the available appc images on the machine by invoking 'rkt image list'.
 func (r *Runtime) ListImages() ([]kubecontainer.Image, error) {
-	listResp, err := r.apisvc.ListImages(context.Background(), &rktapi.ListImagesRequest{})
+	ctx, cancel := context.WithTimeout(context.Background(), r.requestTimeout)
+	defer cancel()
+	listResp, err := r.apisvc.ListImages(ctx, &rktapi.ListImagesRequest{})
 	if err != nil {
 		return nil, fmt.Errorf("couldn't list images: %v", err)
 	}
@@ -100,14 +124,32 @@ func (r *Runtime) RemoveImage(image kubecontainer.ImageSpec) error {
 	if err != nil {
 		return err
 	}
-	if _, err := r.runCommand("image", "rm", imageID); err != nil {
+	if _, err := r.cli.RunCommand(nil, "image", "rm", imageID); err != nil {
 		return err
 	}
 	return nil
 }
 
 // buildImageName constructs the image name for kubecontainer.Image.
+// If the annotations contain the docker2aci metadata for this image, those are
+// used instead as they may be more accurate in some cases, namely if a
+// non-appc valid character is present
 func buildImageName(img *rktapi.Image) string {
+	registry := ""
+	repository := ""
+	for _, anno := range img.Annotations {
+		if anno.Key == appcDockerRegistryURL {
+			registry = anno.Value
+		}
+		if anno.Key == appcDockerRepository {
+			repository = anno.Value
+		}
+	}
+	if registry != "" && repository != "" {
+		// TODO(euank): This could do the special casing for dockerhub and library images
+		return fmt.Sprintf("%s/%s:%s", registry, repository, img.Version)
+	}
+
 	return fmt.Sprintf("%s:%s", img.Name, img.Version)
 }
 
@@ -138,18 +180,39 @@ func (s sortByImportTime) Less(i, j int) bool { return s[i].ImportTimestamp < s[
 // will return the result reversely sorted by the import time, so that the latest
 // image comes first.
 func (r *Runtime) listImages(image string, detail bool) ([]*rktapi.Image, error) {
-	repoToPull, tag := parsers.ParseImageName(image)
-	listResp, err := r.apisvc.ListImages(context.Background(), &rktapi.ListImagesRequest{
-		Detail: detail,
-		Filters: []*rktapi.ImageFilter{
-			{
-				// TODO(yifan): Add a field in the ImageFilter to match the whole name,
-				// not just keywords.
-				// https://github.com/coreos/rkt/issues/1872#issuecomment-166456938
-				Keywords: []string{repoToPull},
-				Labels:   []*rktapi.KeyValue{{Key: "version", Value: tag}},
-			},
+	repoToPull, tag, _, err := parsers.ParseImageName(image)
+	if err != nil {
+		return nil, err
+	}
+
+	imageFilters := []*rktapi.ImageFilter{
+		{
+			// TODO(yifan): Add a field in the ImageFilter to match the whole name,
+			// not just keywords.
+			// https://github.com/coreos/rkt/issues/1872#issuecomment-166456938
+			Keywords: []string{repoToPull},
+			Labels:   []*rktapi.KeyValue{{Key: "version", Value: tag}},
 		},
+	}
+
+	// If the repo name is not a valid ACIdentifier (namely if it has a port),
+	// then it will have a different name in the store. Search for both the
+	// original name and this modified name in case we choose to also change the
+	// api-service to do this un-conversion on its end.
+	if appcRepoToPull, err := appctypes.SanitizeACIdentifier(repoToPull); err != nil {
+		glog.Warningf("could not convert %v to an aci identifier: %v", err)
+	} else {
+		imageFilters = append(imageFilters, &rktapi.ImageFilter{
+			Keywords: []string{appcRepoToPull},
+			Labels:   []*rktapi.KeyValue{{Key: "version", Value: tag}},
+		})
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), r.requestTimeout)
+	defer cancel()
+	listResp, err := r.apisvc.ListImages(ctx, &rktapi.ListImagesRequest{
+		Detail:  detail,
+		Filters: imageFilters,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("couldn't list images: %v", err)
@@ -176,17 +239,17 @@ func (r *Runtime) getImageManifest(image string) (*appcschema.ImageManifest, err
 	return &manifest, json.Unmarshal(images[0].Manifest, &manifest)
 }
 
-// TODO(yifan): This is very racy, unefficient, and unsafe, we need to provide
+// TODO(yifan): This is very racy, inefficient, and unsafe, we need to provide
 // different namespaces. See: https://github.com/coreos/rkt/issues/836.
-func (r *Runtime) writeDockerAuthConfig(image string, credsSlice []docker.AuthConfiguration) error {
+func (r *Runtime) writeDockerAuthConfig(image string, credsSlice []credentialprovider.LazyAuthConfiguration, userConfigDir string) error {
 	if len(credsSlice) == 0 {
 		return nil
 	}
 
-	creds := docker.AuthConfiguration{}
+	creds := dockertypes.AuthConfig{}
 	// TODO handle multiple creds
 	if len(credsSlice) >= 1 {
-		creds = credsSlice[0]
+		creds = credentialprovider.LazyProvide(credsSlice[0])
 	}
 
 	registry := "index.docker.io"
@@ -196,13 +259,9 @@ func (r *Runtime) writeDockerAuthConfig(image string, credsSlice []docker.AuthCo
 		registry = strings.Split(image, "/")[0]
 	}
 
-	localConfigDir := rktLocalConfigDir
-	if r.config.LocalConfigDir != "" {
-		localConfigDir = r.config.LocalConfigDir
-	}
-	authDir := path.Join(localConfigDir, "auth.d")
+	authDir := filepath.Join(userConfigDir, "auth.d")
 	if _, err := os.Stat(authDir); os.IsNotExist(err) {
-		if err := os.Mkdir(authDir, 0600); err != nil {
+		if err := os.MkdirAll(authDir, 0600); err != nil {
 			glog.Errorf("rkt: Cannot create auth dir: %v", err)
 			return err
 		}
@@ -214,4 +273,20 @@ func (r *Runtime) writeDockerAuthConfig(image string, credsSlice []docker.AuthCo
 		return err
 	}
 	return nil
+}
+
+// ImageStats returns the image stat (total storage bytes).
+func (r *Runtime) ImageStats() (*kubecontainer.ImageStats, error) {
+	var imageStat kubecontainer.ImageStats
+	ctx, cancel := context.WithTimeout(context.Background(), r.requestTimeout)
+	defer cancel()
+	listResp, err := r.apisvc.ListImages(ctx, &rktapi.ListImagesRequest{})
+	if err != nil {
+		return nil, fmt.Errorf("couldn't list images: %v", err)
+	}
+
+	for _, image := range listResp.Images {
+		imageStat.TotalStorageBytes = imageStat.TotalStorageBytes + uint64(image.Size)
+	}
+	return &imageStat, nil
 }

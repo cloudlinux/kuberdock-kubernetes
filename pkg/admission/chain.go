@@ -1,5 +1,5 @@
 /*
-Copyright 2014 The Kubernetes Authors All rights reserved.
+Copyright 2014 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -16,23 +16,8 @@ limitations under the License.
 
 package admission
 
-import clientset "k8s.io/kubernetes/pkg/client/clientset_generated/internalclientset"
-
 // chainAdmissionHandler is an instance of admission.Interface that performs admission control using a chain of admission handlers
 type chainAdmissionHandler []Interface
-
-// NewFromPlugins returns an admission.Interface that will enforce admission control decisions of all
-// the given plugins.
-func NewFromPlugins(client clientset.Interface, pluginNames []string, configFilePath string) Interface {
-	plugins := []Interface{}
-	for _, pluginName := range pluginNames {
-		plugin := InitPlugin(pluginName, client, configFilePath)
-		if plugin != nil {
-			plugins = append(plugins, plugin)
-		}
-	}
-	return chainAdmissionHandler(plugins)
-}
 
 // NewChainHandler creates a new chain handler from an array of handlers. Used for testing.
 func NewChainHandler(handlers ...Interface) Interface {

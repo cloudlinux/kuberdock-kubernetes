@@ -1,5 +1,5 @@
 /*
-Copyright 2014 The Kubernetes Authors All rights reserved.
+Copyright 2014 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -17,7 +17,6 @@ limitations under the License.
 package conversion
 
 import (
-	"encoding/json"
 	"fmt"
 	"reflect"
 	"strconv"
@@ -27,7 +26,7 @@ import (
 	"github.com/google/gofuzz"
 	flag "github.com/spf13/pflag"
 
-	"k8s.io/kubernetes/pkg/util"
+	"k8s.io/kubernetes/pkg/util/diff"
 )
 
 var fuzzIters = flag.Int("fuzz-iters", 50, "How many fuzzing iterations to do.")
@@ -522,7 +521,7 @@ func TestConverter_fuzz(t *testing.T) {
 				continue
 			}
 			if e, a := item.from, item.check; !reflect.DeepEqual(e, a) {
-				t.Errorf("(%v, %v): unexpected diff: %v", i, j, objDiff(e, a))
+				t.Errorf("(%v, %v): unexpected diff: %v", i, j, diff.ObjectDiff(e, a))
 			}
 		}
 	}
@@ -570,7 +569,7 @@ func TestConverter_MapElemAddr(t *testing.T) {
 	third := Foo{}
 	err = c.Convert(&second, &third, AllowDifferentFieldTypeNames, nil)
 	if e, a := first, third; !reflect.DeepEqual(e, a) {
-		t.Errorf("Unexpected diff: %v", objDiff(e, a))
+		t.Errorf("Unexpected diff: %v", diff.ObjectDiff(e, a))
 	}
 }
 
@@ -611,7 +610,7 @@ func TestConverter_meta(t *testing.T) {
 	checks := 0
 	err := c.RegisterConversionFunc(
 		func(in *Foo, out *Bar, s Scope) error {
-			if s.Meta() == nil || s.Meta().SrcVersion != "test" || s.Meta().DestVersion != "passes" {
+			if s.Meta() == nil {
 				t.Errorf("Meta did not get passed!")
 			}
 			checks++
@@ -624,7 +623,7 @@ func TestConverter_meta(t *testing.T) {
 	}
 	err = c.RegisterConversionFunc(
 		func(in *string, out *string, s Scope) error {
-			if s.Meta() == nil || s.Meta().SrcVersion != "test" || s.Meta().DestVersion != "passes" {
+			if s.Meta() == nil {
 				t.Errorf("Meta did not get passed a second time!")
 			}
 			checks++
@@ -634,7 +633,7 @@ func TestConverter_meta(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
-	err = c.Convert(&Foo{}, &Bar{}, 0, &Meta{SrcVersion: "test", DestVersion: "passes"})
+	err = c.Convert(&Foo{}, &Bar{}, 0, &Meta{})
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
@@ -821,27 +820,7 @@ func TestConverter_FieldRename(t *testing.T) {
 			continue
 		}
 		if e, a := item.expect, item.to; !reflect.DeepEqual(e, a) {
-			t.Errorf("%v: unexpected diff: %v", name, objDiff(e, a))
+			t.Errorf("%v: unexpected diff: %v", name, diff.ObjectDiff(e, a))
 		}
 	}
-}
-
-func objDiff(a, b interface{}) string {
-	ab, err := json.Marshal(a)
-	if err != nil {
-		panic("a")
-	}
-	bb, err := json.Marshal(b)
-	if err != nil {
-		panic("b")
-	}
-	return util.StringDiff(string(ab), string(bb))
-
-	// An alternate diff attempt, in case json isn't showing you
-	// the difference. (reflect.DeepEqual makes a distinction between
-	// nil and empty slices, for example.)
-	//return util.StringDiff(
-	//	fmt.Sprintf("%#v", a),
-	//	fmt.Sprintf("%#v", b),
-	//)
 }

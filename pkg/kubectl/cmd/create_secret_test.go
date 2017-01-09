@@ -1,5 +1,5 @@
 /*
-Copyright 2014 The Kubernetes Authors All rights reserved.
+Copyright 2014 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -22,20 +22,26 @@ import (
 	"testing"
 
 	"k8s.io/kubernetes/pkg/api"
-	"k8s.io/kubernetes/pkg/client/unversioned/fake"
+	"k8s.io/kubernetes/pkg/client/restclient/fake"
+	cmdtesting "k8s.io/kubernetes/pkg/kubectl/cmd/testing"
 )
 
 func TestCreateSecretGeneric(t *testing.T) {
-	secretObject := &api.Secret{}
+	secretObject := &api.Secret{
+		Data: map[string][]byte{
+			"password": []byte("includes,comma"),
+			"username": []byte("test_user"),
+		},
+	}
 	secretObject.Name = "my-secret"
-	f, tf, codec := NewAPIFactory()
+	f, tf, codec, ns := cmdtesting.NewAPIFactory()
 	tf.Printer = &testPrinter{}
 	tf.Client = &fake.RESTClient{
-		Codec: codec,
+		NegotiatedSerializer: ns,
 		Client: fake.CreateHTTPClient(func(req *http.Request) (*http.Response, error) {
 			switch p, m := req.URL.Path, req.Method; {
 			case p == "/namespaces/test/secrets" && m == "POST":
-				return &http.Response{StatusCode: 201, Body: objBody(codec, secretObject)}, nil
+				return &http.Response{StatusCode: 201, Header: defaultHeader(), Body: objBody(codec, secretObject)}, nil
 			default:
 				t.Fatalf("unexpected request: %#v\n%#v", req.URL, req)
 				return nil, nil
@@ -46,6 +52,8 @@ func TestCreateSecretGeneric(t *testing.T) {
 	buf := bytes.NewBuffer([]byte{})
 	cmd := NewCmdCreateSecretGeneric(f, buf)
 	cmd.Flags().Set("output", "name")
+	cmd.Flags().Set("from-literal", "password=includes,comma")
+	cmd.Flags().Set("from-literal", "username=test_user")
 	cmd.Run(cmd, []string{secretObject.Name})
 	expectedOutput := "secret/" + secretObject.Name + "\n"
 	if buf.String() != expectedOutput {
@@ -56,14 +64,14 @@ func TestCreateSecretGeneric(t *testing.T) {
 func TestCreateSecretDockerRegistry(t *testing.T) {
 	secretObject := &api.Secret{}
 	secretObject.Name = "my-secret"
-	f, tf, codec := NewAPIFactory()
+	f, tf, codec, ns := cmdtesting.NewAPIFactory()
 	tf.Printer = &testPrinter{}
 	tf.Client = &fake.RESTClient{
-		Codec: codec,
+		NegotiatedSerializer: ns,
 		Client: fake.CreateHTTPClient(func(req *http.Request) (*http.Response, error) {
 			switch p, m := req.URL.Path, req.Method; {
 			case p == "/namespaces/test/secrets" && m == "POST":
-				return &http.Response{StatusCode: 201, Body: objBody(codec, secretObject)}, nil
+				return &http.Response{StatusCode: 201, Header: defaultHeader(), Body: objBody(codec, secretObject)}, nil
 			default:
 				t.Fatalf("unexpected request: %#v\n%#v", req.URL, req)
 				return nil, nil

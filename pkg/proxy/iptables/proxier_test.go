@@ -1,5 +1,5 @@
 /*
-Copyright 2015 The Kubernetes Authors All rights reserved.
+Copyright 2015 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -20,17 +20,21 @@ import (
 	"testing"
 
 	"fmt"
-	"k8s.io/kubernetes/pkg/api"
-	"k8s.io/kubernetes/pkg/proxy"
-	"k8s.io/kubernetes/pkg/types"
-	"k8s.io/kubernetes/pkg/util/exec"
-	utiliptables "k8s.io/kubernetes/pkg/util/iptables"
 	"net"
 	"strings"
+
+	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/kubernetes/pkg/api"
+	"k8s.io/kubernetes/pkg/api/service"
+	"k8s.io/kubernetes/pkg/proxy"
+	"k8s.io/kubernetes/pkg/util/exec"
+	"k8s.io/kubernetes/pkg/util/intstr"
+	utiliptables "k8s.io/kubernetes/pkg/util/iptables"
+	iptablestest "k8s.io/kubernetes/pkg/util/iptables/testing"
 )
 
 func checkAllLines(t *testing.T, table utiliptables.Table, save []byte, expectedLines map[utiliptables.Chain]string) {
-	chainLines := getChainLines(table, save)
+	chainLines := utiliptables.GetChainLines(table, save)
 	for chain, line := range chainLines {
 		if expected, exists := expectedLines[chain]; exists {
 			if expected != line {
@@ -47,7 +51,7 @@ func TestReadLinesFromByteBuffer(t *testing.T) {
 		index := 0
 		readIndex := 0
 		for ; readIndex < len(byteArray); index++ {
-			line, n := readLine(readIndex, byteArray)
+			line, n := utiliptables.ReadLine(readIndex, byteArray)
 			readIndex = n
 			if expected[index] != line {
 				t.Errorf("expected:%q, actual:%q", expected[index], line)
@@ -255,12 +259,14 @@ func TestExecConntrackTool(t *testing.T) {
 	}
 }
 
-func newFakeServiceInfo(service proxy.ServicePortName, ip net.IP, protocol api.Protocol) *serviceInfo {
+func newFakeServiceInfo(service proxy.ServicePortName, ip net.IP, port int, protocol api.Protocol, onlyNodeLocalEndpoints bool) *serviceInfo {
 	return &serviceInfo{
-		sessionAffinityType: api.ServiceAffinityNone, // default
-		stickyMaxAgeSeconds: 180,                     // TODO: paramaterize this in the API.
-		clusterIP:           ip,
-		protocol:            protocol,
+		sessionAffinityType:    api.ServiceAffinityNone, // default
+		stickyMaxAgeMinutes:    180,                     // TODO: paramaterize this in the API.
+		clusterIP:              ip,
+		port:                   port,
+		protocol:               protocol,
+		onlyNodeLocalEndpoints: onlyNodeLocalEndpoints,
 	}
 }
 
@@ -282,10 +288,10 @@ func TestDeleteEndpointConnections(t *testing.T) {
 	}
 
 	serviceMap := make(map[proxy.ServicePortName]*serviceInfo)
-	svc1 := proxy.ServicePortName{types.NamespacedName{Namespace: "ns1", Name: "svc1"}, ""}
-	svc2 := proxy.ServicePortName{types.NamespacedName{Namespace: "ns1", Name: "svc2"}, ""}
-	serviceMap[svc1] = newFakeServiceInfo(svc1, net.IPv4(10, 20, 30, 40), api.ProtocolUDP)
-	serviceMap[svc2] = newFakeServiceInfo(svc1, net.IPv4(10, 20, 30, 41), api.ProtocolTCP)
+	svc1 := proxy.ServicePortName{NamespacedName: types.NamespacedName{Namespace: "ns1", Name: "svc1"}, Port: "80"}
+	svc2 := proxy.ServicePortName{NamespacedName: types.NamespacedName{Namespace: "ns1", Name: "svc2"}, Port: "80"}
+	serviceMap[svc1] = newFakeServiceInfo(svc1, net.IPv4(10, 20, 30, 40), 80, api.ProtocolUDP, false)
+	serviceMap[svc2] = newFakeServiceInfo(svc1, net.IPv4(10, 20, 30, 41), 80, api.ProtocolTCP, false)
 
 	fakeProxier := Proxier{exec: &fexec, serviceMap: serviceMap}
 
@@ -374,4 +380,795 @@ func TestDeleteServiceConnections(t *testing.T) {
 	}
 }
 
-// TODO(thockin): add a test for syncProxyRules() or break it down further and test the pieces.
+type fakeClosable struct {
+	closed bool
+}
+
+func (c *fakeClosable) Close() error {
+	c.closed = true
+	return nil
+}
+
+func TestRevertPorts(t *testing.T) {
+	testCases := []struct {
+		replacementPorts []localPort
+		existingPorts    []localPort
+		expectToBeClose  []bool
+	}{
+		{
+			replacementPorts: []localPort{
+				{port: 5001},
+				{port: 5002},
+				{port: 5003},
+			},
+			existingPorts:   []localPort{},
+			expectToBeClose: []bool{true, true, true},
+		},
+		{
+			replacementPorts: []localPort{},
+			existingPorts: []localPort{
+				{port: 5001},
+				{port: 5002},
+				{port: 5003},
+			},
+			expectToBeClose: []bool{},
+		},
+		{
+			replacementPorts: []localPort{
+				{port: 5001},
+				{port: 5002},
+				{port: 5003},
+			},
+			existingPorts: []localPort{
+				{port: 5001},
+				{port: 5002},
+				{port: 5003},
+			},
+			expectToBeClose: []bool{false, false, false},
+		},
+		{
+			replacementPorts: []localPort{
+				{port: 5001},
+				{port: 5002},
+				{port: 5003},
+			},
+			existingPorts: []localPort{
+				{port: 5001},
+				{port: 5003},
+			},
+			expectToBeClose: []bool{false, true, false},
+		},
+		{
+			replacementPorts: []localPort{
+				{port: 5001},
+				{port: 5002},
+				{port: 5003},
+			},
+			existingPorts: []localPort{
+				{port: 5001},
+				{port: 5002},
+				{port: 5003},
+				{port: 5004},
+			},
+			expectToBeClose: []bool{false, false, false},
+		},
+	}
+
+	for i, tc := range testCases {
+		replacementPortsMap := make(map[localPort]closeable)
+		for _, lp := range tc.replacementPorts {
+			replacementPortsMap[lp] = &fakeClosable{}
+		}
+		existingPortsMap := make(map[localPort]closeable)
+		for _, lp := range tc.existingPorts {
+			existingPortsMap[lp] = &fakeClosable{}
+		}
+		revertPorts(replacementPortsMap, existingPortsMap)
+		for j, expectation := range tc.expectToBeClose {
+			if replacementPortsMap[tc.replacementPorts[j]].(*fakeClosable).closed != expectation {
+				t.Errorf("Expect replacement localport %v to be %v in test case %v", tc.replacementPorts[j], expectation, i)
+			}
+		}
+		for _, lp := range tc.existingPorts {
+			if existingPortsMap[lp].(*fakeClosable).closed == true {
+				t.Errorf("Expect existing localport %v to be false in test case %v", lp, i)
+			}
+		}
+	}
+
+}
+
+// fakePortOpener implements portOpener.
+type fakePortOpener struct {
+	openPorts []*localPort
+}
+
+// OpenLocalPort fakes out the listen() and bind() used by syncProxyRules
+// to lock a local port.
+func (f *fakePortOpener) OpenLocalPort(lp *localPort) (closeable, error) {
+	f.openPorts = append(f.openPorts, lp)
+	return nil, nil
+}
+
+func NewFakeProxier(ipt utiliptables.Interface) *Proxier {
+	// TODO: Call NewProxier after refactoring out the goroutine
+	// invocation into a Run() method.
+	return &Proxier{
+		exec:                        &exec.FakeExec{},
+		serviceMap:                  make(map[proxy.ServicePortName]*serviceInfo),
+		iptables:                    ipt,
+		endpointsMap:                make(map[proxy.ServicePortName][]*endpointsInfo),
+		clusterCIDR:                 "10.0.0.0/24",
+		haveReceivedEndpointsUpdate: true,
+		haveReceivedServiceUpdate:   true,
+		hostname:                    "test-hostname",
+		portsMap:                    make(map[localPort]closeable),
+		portMapper:                  &fakePortOpener{[]*localPort{}},
+	}
+}
+
+func hasJump(rules []iptablestest.Rule, destChain, destIP, destPort string) bool {
+	match := false
+	for _, r := range rules {
+		if r[iptablestest.Jump] == destChain {
+			match = true
+			if destIP != "" {
+				if strings.Contains(r[iptablestest.Destination], destIP) && (strings.Contains(r[iptablestest.DPort], destPort) || r[iptablestest.DPort] == "") {
+					return true
+				}
+				match = false
+			}
+			if destPort != "" {
+				if strings.Contains(r[iptablestest.DPort], destPort) && (strings.Contains(r[iptablestest.Destination], destIP) || r[iptablestest.Destination] == "") {
+					return true
+				}
+				match = false
+			}
+		}
+	}
+	return match
+}
+
+func TestHasJump(t *testing.T) {
+	testCases := map[string]struct {
+		rules     []iptablestest.Rule
+		destChain string
+		destIP    string
+		destPort  string
+		expected  bool
+	}{
+		"case 1": {
+			// Match the 1st rule(both dest IP and dest Port)
+			rules: []iptablestest.Rule{
+				{"-d ": "10.20.30.41/32", "--dport ": "80", "-p ": "tcp", "-j ": "REJECT"},
+				{"--dport ": "3001", "-p ": "tcp", "-j ": "KUBE-MARK-MASQ"},
+			},
+			destChain: "REJECT",
+			destIP:    "10.20.30.41",
+			destPort:  "80",
+			expected:  true,
+		},
+		"case 2": {
+			// Match the 2nd rule(dest Port)
+			rules: []iptablestest.Rule{
+				{"-d ": "10.20.30.41/32", "-p ": "tcp", "-j ": "REJECT"},
+				{"--dport ": "3001", "-p ": "tcp", "-j ": "REJECT"},
+			},
+			destChain: "REJECT",
+			destIP:    "",
+			destPort:  "3001",
+			expected:  true,
+		},
+		"case 3": {
+			// Match both dest IP and dest Port
+			rules: []iptablestest.Rule{
+				{"-d ": "1.2.3.4/32", "--dport ": "80", "-p ": "tcp", "-j ": "KUBE-XLB-GF53O3C2HZEXL2XN"},
+			},
+			destChain: "KUBE-XLB-GF53O3C2HZEXL2XN",
+			destIP:    "1.2.3.4",
+			destPort:  "80",
+			expected:  true,
+		},
+		"case 4": {
+			// Match dest IP but doesn't match dest Port
+			rules: []iptablestest.Rule{
+				{"-d ": "1.2.3.4/32", "--dport ": "80", "-p ": "tcp", "-j ": "KUBE-XLB-GF53O3C2HZEXL2XN"},
+			},
+			destChain: "KUBE-XLB-GF53O3C2HZEXL2XN",
+			destIP:    "1.2.3.4",
+			destPort:  "8080",
+			expected:  false,
+		},
+		"case 5": {
+			// Match dest Port but doesn't match dest IP
+			rules: []iptablestest.Rule{
+				{"-d ": "1.2.3.4/32", "--dport ": "80", "-p ": "tcp", "-j ": "KUBE-XLB-GF53O3C2HZEXL2XN"},
+			},
+			destChain: "KUBE-XLB-GF53O3C2HZEXL2XN",
+			destIP:    "10.20.30.40",
+			destPort:  "80",
+			expected:  false,
+		},
+		"case 6": {
+			// Match the 2nd rule(dest IP)
+			rules: []iptablestest.Rule{
+				{"-d ": "10.20.30.41/32", "-p ": "tcp", "-j ": "REJECT"},
+				{"-d ": "1.2.3.4/32", "-p ": "tcp", "-j ": "REJECT"},
+				{"--dport ": "3001", "-p ": "tcp", "-j ": "REJECT"},
+			},
+			destChain: "REJECT",
+			destIP:    "1.2.3.4",
+			destPort:  "8080",
+			expected:  true,
+		},
+		"case 7": {
+			// Match the 2nd rule(dest Port)
+			rules: []iptablestest.Rule{
+				{"-d ": "10.20.30.41/32", "-p ": "tcp", "-j ": "REJECT"},
+				{"--dport ": "3001", "-p ": "tcp", "-j ": "REJECT"},
+			},
+			destChain: "REJECT",
+			destIP:    "1.2.3.4",
+			destPort:  "3001",
+			expected:  true,
+		},
+		"case 8": {
+			// Match the 1st rule(dest IP)
+			rules: []iptablestest.Rule{
+				{"-d ": "10.20.30.41/32", "-p ": "tcp", "-j ": "REJECT"},
+				{"--dport ": "3001", "-p ": "tcp", "-j ": "REJECT"},
+			},
+			destChain: "REJECT",
+			destIP:    "10.20.30.41",
+			destPort:  "8080",
+			expected:  true,
+		},
+		"case 9": {
+			rules: []iptablestest.Rule{
+				{"-j ": "KUBE-SEP-LWSOSDSHMKPJHHJV"},
+			},
+			destChain: "KUBE-SEP-LWSOSDSHMKPJHHJV",
+			destIP:    "",
+			destPort:  "",
+			expected:  true,
+		},
+		"case 10": {
+			rules: []iptablestest.Rule{
+				{"-j ": "KUBE-SEP-FOO"},
+			},
+			destChain: "KUBE-SEP-BAR",
+			destIP:    "",
+			destPort:  "",
+			expected:  false,
+		},
+	}
+
+	for k, tc := range testCases {
+		if got := hasJump(tc.rules, tc.destChain, tc.destIP, tc.destPort); got != tc.expected {
+			t.Errorf("%v: expected %v, got %v", k, tc.expected, got)
+		}
+	}
+}
+
+func hasDNAT(rules []iptablestest.Rule, endpoint string) bool {
+	for _, r := range rules {
+		if r[iptablestest.ToDest] == endpoint {
+			return true
+		}
+	}
+	return false
+}
+
+func errorf(msg string, rules []iptablestest.Rule, t *testing.T) {
+	for _, r := range rules {
+		t.Logf("%v", r)
+	}
+	t.Errorf("%v", msg)
+}
+
+func TestClusterIPReject(t *testing.T) {
+	ipt := iptablestest.NewFake()
+	fp := NewFakeProxier(ipt)
+	svcName := "svc1"
+	svcIP := net.IPv4(10, 20, 30, 41)
+
+	svc := proxy.ServicePortName{NamespacedName: types.NamespacedName{Namespace: "ns1", Name: svcName}, Port: "80"}
+	fp.serviceMap[svc] = newFakeServiceInfo(svc, svcIP, 80, api.ProtocolTCP, false)
+	fp.syncProxyRules()
+
+	svcChain := string(servicePortChainName(svc, strings.ToLower(string(api.ProtocolTCP))))
+	svcRules := ipt.GetRules(svcChain)
+	if len(svcRules) != 0 {
+		errorf(fmt.Sprintf("Unexpected rule for chain %v service %v without endpoints", svcChain, svcName), svcRules, t)
+	}
+	kubeSvcRules := ipt.GetRules(string(kubeServicesChain))
+	if !hasJump(kubeSvcRules, iptablestest.Reject, svcIP.String(), "80") {
+		errorf(fmt.Sprintf("Failed to find a %v rule for service %v with no endpoints", iptablestest.Reject, svcName), kubeSvcRules, t)
+	}
+}
+
+func TestClusterIPEndpointsJump(t *testing.T) {
+	ipt := iptablestest.NewFake()
+	fp := NewFakeProxier(ipt)
+	svcName := "svc1"
+	svcIP := net.IPv4(10, 20, 30, 41)
+
+	svc := proxy.ServicePortName{NamespacedName: types.NamespacedName{Namespace: "ns1", Name: svcName}, Port: "80"}
+	fp.serviceMap[svc] = newFakeServiceInfo(svc, svcIP, 80, api.ProtocolTCP, true)
+	ep := "10.180.0.1:80"
+	fp.endpointsMap[svc] = []*endpointsInfo{{ep, false}}
+
+	fp.syncProxyRules()
+
+	svcChain := string(servicePortChainName(svc, strings.ToLower(string(api.ProtocolTCP))))
+	epChain := string(servicePortEndpointChainName(svc, strings.ToLower(string(api.ProtocolTCP)), ep))
+
+	kubeSvcRules := ipt.GetRules(string(kubeServicesChain))
+	if !hasJump(kubeSvcRules, svcChain, svcIP.String(), "80") {
+		errorf(fmt.Sprintf("Failed to find jump from KUBE-SERVICES to %v chain", svcChain), kubeSvcRules, t)
+	}
+
+	svcRules := ipt.GetRules(svcChain)
+	if !hasJump(svcRules, epChain, "", "") {
+		errorf(fmt.Sprintf("Failed to jump to ep chain %v", epChain), svcRules, t)
+	}
+	epRules := ipt.GetRules(epChain)
+	if !hasDNAT(epRules, ep) {
+		errorf(fmt.Sprintf("Endpoint chain %v lacks DNAT to %v", epChain, ep), epRules, t)
+	}
+}
+
+func typeLoadBalancer(svcInfo *serviceInfo) *serviceInfo {
+	svcInfo.nodePort = 3001
+	svcInfo.loadBalancerStatus = api.LoadBalancerStatus{
+		Ingress: []api.LoadBalancerIngress{{IP: "1.2.3.4"}},
+	}
+	return svcInfo
+}
+
+func TestLoadBalancer(t *testing.T) {
+	ipt := iptablestest.NewFake()
+	fp := NewFakeProxier(ipt)
+	svcName := "svc1"
+	svcIP := net.IPv4(10, 20, 30, 41)
+
+	svc := proxy.ServicePortName{NamespacedName: types.NamespacedName{Namespace: "ns1", Name: svcName}, Port: "80"}
+	svcInfo := newFakeServiceInfo(svc, svcIP, 80, api.ProtocolTCP, false)
+	fp.serviceMap[svc] = typeLoadBalancer(svcInfo)
+
+	ep1 := "10.180.0.1:80"
+	fp.endpointsMap[svc] = []*endpointsInfo{{ep1, false}}
+
+	fp.syncProxyRules()
+
+	proto := strings.ToLower(string(api.ProtocolTCP))
+	fwChain := string(serviceFirewallChainName(svc, proto))
+	svcChain := string(servicePortChainName(svc, strings.ToLower(string(api.ProtocolTCP))))
+	//lbChain := string(serviceLBChainName(svc, proto))
+
+	kubeSvcRules := ipt.GetRules(string(kubeServicesChain))
+	if !hasJump(kubeSvcRules, fwChain, svcInfo.loadBalancerStatus.Ingress[0].IP, "80") {
+		errorf(fmt.Sprintf("Failed to find jump to firewall chain %v", fwChain), kubeSvcRules, t)
+	}
+
+	fwRules := ipt.GetRules(fwChain)
+	if !hasJump(fwRules, svcChain, "", "") || !hasJump(fwRules, string(KubeMarkMasqChain), "", "") {
+		errorf(fmt.Sprintf("Failed to find jump from firewall chain %v to svc chain %v", fwChain, svcChain), fwRules, t)
+	}
+}
+
+func TestNodePort(t *testing.T) {
+	ipt := iptablestest.NewFake()
+	fp := NewFakeProxier(ipt)
+	svcName := "svc1"
+	svcIP := net.IPv4(10, 20, 30, 41)
+
+	svc := proxy.ServicePortName{NamespacedName: types.NamespacedName{Namespace: "ns1", Name: svcName}, Port: "80"}
+	svcInfo := newFakeServiceInfo(svc, svcIP, 80, api.ProtocolTCP, false)
+	svcInfo.nodePort = 3001
+	fp.serviceMap[svc] = svcInfo
+
+	ep1 := "10.180.0.1:80"
+	fp.endpointsMap[svc] = []*endpointsInfo{{ep1, false}}
+
+	fp.syncProxyRules()
+
+	proto := strings.ToLower(string(api.ProtocolTCP))
+	svcChain := string(servicePortChainName(svc, strings.ToLower(proto)))
+
+	kubeNodePortRules := ipt.GetRules(string(kubeNodePortsChain))
+	if !hasJump(kubeNodePortRules, svcChain, "", fmt.Sprintf("%v", svcInfo.nodePort)) {
+		errorf(fmt.Sprintf("Failed to find jump to svc chain %v", svcChain), kubeNodePortRules, t)
+	}
+}
+
+func TestOnlyLocalLoadBalancing(t *testing.T) {
+	ipt := iptablestest.NewFake()
+	fp := NewFakeProxier(ipt)
+	svcName := "svc1"
+	svcIP := net.IPv4(10, 20, 30, 41)
+
+	svc := proxy.ServicePortName{NamespacedName: types.NamespacedName{Namespace: "ns1", Name: svcName}, Port: "80"}
+	svcInfo := newFakeServiceInfo(svc, svcIP, 80, api.ProtocolTCP, true)
+	fp.serviceMap[svc] = typeLoadBalancer(svcInfo)
+
+	nonLocalEp := "10.180.0.1:80"
+	localEp := "10.180.2.1:80"
+	fp.endpointsMap[svc] = []*endpointsInfo{{nonLocalEp, false}, {localEp, true}}
+
+	fp.syncProxyRules()
+
+	proto := strings.ToLower(string(api.ProtocolTCP))
+	fwChain := string(serviceFirewallChainName(svc, proto))
+	lbChain := string(serviceLBChainName(svc, proto))
+
+	nonLocalEpChain := string(servicePortEndpointChainName(svc, strings.ToLower(string(api.ProtocolTCP)), nonLocalEp))
+	localEpChain := string(servicePortEndpointChainName(svc, strings.ToLower(string(api.ProtocolTCP)), localEp))
+
+	kubeSvcRules := ipt.GetRules(string(kubeServicesChain))
+	if !hasJump(kubeSvcRules, fwChain, svcInfo.loadBalancerStatus.Ingress[0].IP, "") {
+		errorf(fmt.Sprintf("Failed to find jump to firewall chain %v", fwChain), kubeSvcRules, t)
+	}
+
+	fwRules := ipt.GetRules(fwChain)
+	if !hasJump(fwRules, lbChain, "", "") {
+		errorf(fmt.Sprintf("Failed to find jump from firewall chain %v to svc chain %v", fwChain, lbChain), fwRules, t)
+	}
+	if hasJump(fwRules, string(KubeMarkMasqChain), "", "") {
+		errorf(fmt.Sprintf("Found jump from fw chain %v to MASQUERADE", fwChain), fwRules, t)
+	}
+
+	lbRules := ipt.GetRules(lbChain)
+	if hasJump(lbRules, nonLocalEpChain, "", "") {
+		errorf(fmt.Sprintf("Found jump from lb chain %v to non-local ep %v", lbChain, nonLocalEp), lbRules, t)
+	}
+	if !hasJump(lbRules, localEpChain, "", "") {
+		errorf(fmt.Sprintf("Didn't find jump from lb chain %v to local ep %v", lbChain, nonLocalEp), lbRules, t)
+	}
+}
+
+func TestOnlyLocalNodePortsNoClusterCIDR(t *testing.T) {
+	ipt := iptablestest.NewFake()
+	fp := NewFakeProxier(ipt)
+	// set cluster CIDR to empty before test
+	fp.clusterCIDR = ""
+	onlyLocalNodePorts(t, fp, ipt)
+}
+
+func TestOnlyLocalNodePorts(t *testing.T) {
+	ipt := iptablestest.NewFake()
+	fp := NewFakeProxier(ipt)
+	onlyLocalNodePorts(t, fp, ipt)
+}
+
+func onlyLocalNodePorts(t *testing.T, fp *Proxier, ipt *iptablestest.FakeIPTables) {
+	shouldLBTOSVCRuleExist := len(fp.clusterCIDR) > 0
+	svcName := "svc1"
+	svcIP := net.IPv4(10, 20, 30, 41)
+
+	svc := proxy.ServicePortName{NamespacedName: types.NamespacedName{Namespace: "ns1", Name: svcName}, Port: "80"}
+	svcInfo := newFakeServiceInfo(svc, svcIP, 80, api.ProtocolTCP, true)
+	svcInfo.nodePort = 3001
+	fp.serviceMap[svc] = svcInfo
+
+	nonLocalEp := "10.180.0.1:80"
+	localEp := "10.180.2.1:80"
+	fp.endpointsMap[svc] = []*endpointsInfo{{nonLocalEp, false}, {localEp, true}}
+
+	fp.syncProxyRules()
+
+	proto := strings.ToLower(string(api.ProtocolTCP))
+	lbChain := string(serviceLBChainName(svc, proto))
+
+	nonLocalEpChain := string(servicePortEndpointChainName(svc, strings.ToLower(string(api.ProtocolTCP)), nonLocalEp))
+	localEpChain := string(servicePortEndpointChainName(svc, strings.ToLower(string(api.ProtocolTCP)), localEp))
+
+	kubeNodePortRules := ipt.GetRules(string(kubeNodePortsChain))
+	if !hasJump(kubeNodePortRules, lbChain, "", fmt.Sprintf("%v", svcInfo.nodePort)) {
+		errorf(fmt.Sprintf("Failed to find jump to lb chain %v", lbChain), kubeNodePortRules, t)
+	}
+
+	svcChain := string(servicePortChainName(svc, strings.ToLower(string(api.ProtocolTCP))))
+	lbRules := ipt.GetRules(lbChain)
+	if hasJump(lbRules, nonLocalEpChain, "", "") {
+		errorf(fmt.Sprintf("Found jump from lb chain %v to non-local ep %v", lbChain, nonLocalEp), lbRules, t)
+	}
+	if hasJump(lbRules, svcChain, "", "") != shouldLBTOSVCRuleExist {
+		prefix := "Did not find "
+		if !shouldLBTOSVCRuleExist {
+			prefix = "Found "
+		}
+		errorf(fmt.Sprintf("%s jump from lb chain %v to svc %v", prefix, lbChain, svcChain), lbRules, t)
+	}
+	if !hasJump(lbRules, localEpChain, "", "") {
+		errorf(fmt.Sprintf("Didn't find jump from lb chain %v to local ep %v", lbChain, nonLocalEp), lbRules, t)
+	}
+}
+
+func makeTestService(namespace, name string, svcFunc func(*api.Service)) api.Service {
+	svc := api.Service{
+		ObjectMeta: api.ObjectMeta{
+			Name:      name,
+			Namespace: namespace,
+		},
+		Spec:   api.ServiceSpec{},
+		Status: api.ServiceStatus{},
+	}
+	svcFunc(&svc)
+	return svc
+}
+
+func addTestPort(array []api.ServicePort, name string, protocol api.Protocol, port, nodeport int32, targetPort int) []api.ServicePort {
+	svcPort := api.ServicePort{
+		Name:       name,
+		Protocol:   protocol,
+		Port:       port,
+		NodePort:   nodeport,
+		TargetPort: intstr.FromInt(targetPort),
+	}
+	return append(array, svcPort)
+}
+
+func TestBuildServiceMapAddRemove(t *testing.T) {
+	services := []api.Service{
+		makeTestService("somewhere-else", "cluster-ip", func(svc *api.Service) {
+			svc.Spec.Type = api.ServiceTypeClusterIP
+			svc.Spec.ClusterIP = "172.16.55.4"
+			svc.Spec.Ports = addTestPort(svc.Spec.Ports, "something", "UDP", 1234, 4321, 0)
+			svc.Spec.Ports = addTestPort(svc.Spec.Ports, "somethingelse", "UDP", 1235, 5321, 0)
+		}),
+		makeTestService("somewhere-else", "node-port", func(svc *api.Service) {
+			svc.Spec.Type = api.ServiceTypeNodePort
+			svc.Spec.ClusterIP = "172.16.55.10"
+			svc.Spec.Ports = addTestPort(svc.Spec.Ports, "blahblah", "UDP", 345, 678, 0)
+			svc.Spec.Ports = addTestPort(svc.Spec.Ports, "moreblahblah", "TCP", 344, 677, 0)
+		}),
+		makeTestService("somewhere", "load-balancer", func(svc *api.Service) {
+			svc.Spec.Type = api.ServiceTypeLoadBalancer
+			svc.Spec.ClusterIP = "172.16.55.11"
+			svc.Spec.LoadBalancerIP = "5.6.7.8"
+			svc.Spec.Ports = addTestPort(svc.Spec.Ports, "foobar", "UDP", 8675, 30061, 7000)
+			svc.Spec.Ports = addTestPort(svc.Spec.Ports, "baz", "UDP", 8676, 30062, 7001)
+			svc.Status.LoadBalancer = api.LoadBalancerStatus{
+				Ingress: []api.LoadBalancerIngress{
+					{IP: "10.1.2.4"},
+				},
+			}
+		}),
+		makeTestService("somewhere", "only-local-load-balancer", func(svc *api.Service) {
+			svc.ObjectMeta.Annotations = map[string]string{
+				service.BetaAnnotationExternalTraffic:     service.AnnotationValueExternalTrafficLocal,
+				service.BetaAnnotationHealthCheckNodePort: "345",
+			}
+			svc.Spec.Type = api.ServiceTypeLoadBalancer
+			svc.Spec.ClusterIP = "172.16.55.12"
+			svc.Spec.LoadBalancerIP = "5.6.7.8"
+			svc.Spec.Ports = addTestPort(svc.Spec.Ports, "foobar2", "UDP", 8677, 30063, 7002)
+			svc.Spec.Ports = addTestPort(svc.Spec.Ports, "baz", "UDP", 8678, 30064, 7003)
+			svc.Status.LoadBalancer = api.LoadBalancerStatus{
+				Ingress: []api.LoadBalancerIngress{
+					{IP: "10.1.2.3"},
+				},
+			}
+		}),
+	}
+
+	serviceMap, hcAdd, hcDel, staleUDPServices := buildServiceMap(services, make(proxyServiceMap))
+	if len(serviceMap) != 8 {
+		t.Errorf("expected service map length 8, got %v", serviceMap)
+	}
+
+	// The only-local-loadbalancer ones get added
+	if len(hcAdd) != 2 {
+		t.Errorf("expected healthcheck add length 2, got %v", hcAdd)
+	} else {
+		for _, hc := range hcAdd {
+			if hc.namespace.Namespace != "somewhere" || hc.namespace.Name != "only-local-load-balancer" {
+				t.Errorf("unexpected healthcheck listener added: %v", hc)
+			}
+		}
+	}
+
+	// All the rest get deleted
+	if len(hcDel) != 6 {
+		t.Errorf("expected healthcheck del length 6, got %v", hcDel)
+	} else {
+		for _, hc := range hcDel {
+			if hc.namespace.Namespace == "somewhere" && hc.namespace.Name == "only-local-load-balancer" {
+				t.Errorf("unexpected healthcheck listener deleted: %v", hc)
+			}
+		}
+	}
+
+	if len(staleUDPServices) != 0 {
+		// Services only added, so nothing stale yet
+		t.Errorf("expected stale UDP services length 0, got %d", len(staleUDPServices))
+	}
+
+	// Remove some stuff
+	services = []api.Service{services[0]}
+	services[0].Spec.Ports = []api.ServicePort{services[0].Spec.Ports[1]}
+	serviceMap, hcAdd, hcDel, staleUDPServices = buildServiceMap(services, serviceMap)
+	if len(serviceMap) != 1 {
+		t.Errorf("expected service map length 1, got %v", serviceMap)
+	}
+
+	if len(hcAdd) != 0 {
+		t.Errorf("expected healthcheck add length 1, got %v", hcAdd)
+	}
+
+	// The only OnlyLocal annotation was removed above, so we expect a delete now.
+	// FIXME: Since the BetaAnnotationHealthCheckNodePort is the same for all
+	// ServicePorts, we'll get one delete per ServicePort, even though they all
+	// contain the same information
+	if len(hcDel) != 2 {
+		t.Errorf("expected healthcheck del length 2, got %v", hcDel)
+	} else {
+		for _, hc := range hcDel {
+			if hc.namespace.Namespace != "somewhere" || hc.namespace.Name != "only-local-load-balancer" {
+				t.Errorf("unexpected healthcheck listener deleted: %v", hc)
+			}
+		}
+	}
+
+	// All services but one were deleted. While you'd expect only the ClusterIPs
+	// from the three deleted services here, we still have the ClusterIP for
+	// the not-deleted service, because one of it's ServicePorts was deleted.
+	expectedStaleUDPServices := []string{"172.16.55.10", "172.16.55.4", "172.16.55.11", "172.16.55.12"}
+	if len(staleUDPServices) != len(expectedStaleUDPServices) {
+		t.Errorf("expected stale UDP services length %d, got %v", len(expectedStaleUDPServices), staleUDPServices.List())
+	}
+	for _, ip := range expectedStaleUDPServices {
+		if !staleUDPServices.Has(ip) {
+			t.Errorf("expected stale UDP service service %s", ip)
+		}
+	}
+}
+
+func TestBuildServiceMapServiceHeadless(t *testing.T) {
+	services := []api.Service{
+		makeTestService("somewhere-else", "headless", func(svc *api.Service) {
+			svc.Spec.Type = api.ServiceTypeClusterIP
+			svc.Spec.ClusterIP = api.ClusterIPNone
+			svc.Spec.Ports = addTestPort(svc.Spec.Ports, "rpc", "UDP", 1234, 0, 0)
+		}),
+	}
+
+	// Headless service should be ignored
+	serviceMap, hcAdd, hcDel, staleUDPServices := buildServiceMap(services, make(proxyServiceMap))
+	if len(serviceMap) != 0 {
+		t.Errorf("expected service map length 0, got %d", len(serviceMap))
+	}
+
+	// No proxied services, so no healthchecks
+	if len(hcAdd) != 0 {
+		t.Errorf("expected healthcheck add length 0, got %d", len(hcAdd))
+	}
+	if len(hcDel) != 0 {
+		t.Errorf("expected healthcheck del length 0, got %d", len(hcDel))
+	}
+
+	if len(staleUDPServices) != 0 {
+		t.Errorf("expected stale UDP services length 0, got %d", len(staleUDPServices))
+	}
+}
+
+func TestBuildServiceMapServiceTypeExternalName(t *testing.T) {
+	services := []api.Service{
+		makeTestService("somewhere-else", "external-name", func(svc *api.Service) {
+			svc.Spec.Type = api.ServiceTypeExternalName
+			svc.Spec.ClusterIP = "172.16.55.4" // Should be ignored
+			svc.Spec.ExternalName = "foo2.bar.com"
+			svc.Spec.Ports = addTestPort(svc.Spec.Ports, "blah", "UDP", 1235, 5321, 0)
+		}),
+	}
+
+	serviceMap, hcAdd, hcDel, staleUDPServices := buildServiceMap(services, make(proxyServiceMap))
+	if len(serviceMap) != 0 {
+		t.Errorf("expected service map length 0, got %v", serviceMap)
+	}
+	// No proxied services, so no healthchecks
+	if len(hcAdd) != 0 {
+		t.Errorf("expected healthcheck add length 0, got %v", hcAdd)
+	}
+	if len(hcDel) != 0 {
+		t.Errorf("expected healthcheck del length 0, got %v", hcDel)
+	}
+	if len(staleUDPServices) != 0 {
+		t.Errorf("expected stale UDP services length 0, got %v", staleUDPServices)
+	}
+}
+
+func TestBuildServiceMapServiceUpdate(t *testing.T) {
+	first := []api.Service{
+		makeTestService("somewhere", "some-service", func(svc *api.Service) {
+			svc.Spec.Type = api.ServiceTypeClusterIP
+			svc.Spec.ClusterIP = "172.16.55.4"
+			svc.Spec.Ports = addTestPort(svc.Spec.Ports, "something", "UDP", 1234, 4321, 0)
+			svc.Spec.Ports = addTestPort(svc.Spec.Ports, "somethingelse", "TCP", 1235, 5321, 0)
+		}),
+	}
+
+	second := []api.Service{
+		makeTestService("somewhere", "some-service", func(svc *api.Service) {
+			svc.ObjectMeta.Annotations = map[string]string{
+				service.BetaAnnotationExternalTraffic:     service.AnnotationValueExternalTrafficLocal,
+				service.BetaAnnotationHealthCheckNodePort: "345",
+			}
+			svc.Spec.Type = api.ServiceTypeLoadBalancer
+			svc.Spec.ClusterIP = "172.16.55.4"
+			svc.Spec.LoadBalancerIP = "5.6.7.8"
+			svc.Spec.Ports = addTestPort(svc.Spec.Ports, "something", "UDP", 1234, 4321, 7002)
+			svc.Spec.Ports = addTestPort(svc.Spec.Ports, "somethingelse", "TCP", 1235, 5321, 7003)
+			svc.Status.LoadBalancer = api.LoadBalancerStatus{
+				Ingress: []api.LoadBalancerIngress{
+					{IP: "10.1.2.3"},
+				},
+			}
+		}),
+	}
+
+	serviceMap, hcAdd, hcDel, staleUDPServices := buildServiceMap(first, make(proxyServiceMap))
+	if len(serviceMap) != 2 {
+		t.Errorf("expected service map length 2, got %v", serviceMap)
+	}
+	if len(hcAdd) != 0 {
+		t.Errorf("expected healthcheck add length 0, got %v", hcAdd)
+	}
+	if len(hcDel) != 2 {
+		t.Errorf("expected healthcheck del length 2, got %v", hcDel)
+	}
+	if len(staleUDPServices) != 0 {
+		// Services only added, so nothing stale yet
+		t.Errorf("expected stale UDP services length 0, got %d", len(staleUDPServices))
+	}
+
+	// Change service to load-balancer
+	serviceMap, hcAdd, hcDel, staleUDPServices = buildServiceMap(second, serviceMap)
+	if len(serviceMap) != 2 {
+		t.Errorf("expected service map length 2, got %v", serviceMap)
+	}
+	if len(hcAdd) != 2 {
+		t.Errorf("expected healthcheck add length 2, got %v", hcAdd)
+	}
+	if len(hcDel) != 0 {
+		t.Errorf("expected healthcheck add length 2, got %v", hcDel)
+	}
+	if len(staleUDPServices) != 0 {
+		t.Errorf("expected stale UDP services length 0, got %v", staleUDPServices.List())
+	}
+
+	// No change; make sure the service map stays the same and there are
+	// no health-check changes
+	serviceMap, hcAdd, hcDel, staleUDPServices = buildServiceMap(second, serviceMap)
+	if len(serviceMap) != 2 {
+		t.Errorf("expected service map length 2, got %v", serviceMap)
+	}
+	if len(hcAdd) != 0 {
+		t.Errorf("expected healthcheck add length 0, got %v", hcAdd)
+	}
+	if len(hcDel) != 0 {
+		t.Errorf("expected healthcheck add length 2, got %v", hcDel)
+	}
+	if len(staleUDPServices) != 0 {
+		t.Errorf("expected stale UDP services length 0, got %v", staleUDPServices.List())
+	}
+
+	// And back to ClusterIP
+	serviceMap, hcAdd, hcDel, staleUDPServices = buildServiceMap(first, serviceMap)
+	if len(serviceMap) != 2 {
+		t.Errorf("expected service map length 2, got %v", serviceMap)
+	}
+	if len(hcAdd) != 0 {
+		t.Errorf("expected healthcheck add length 0, got %v", hcAdd)
+	}
+	if len(hcDel) != 2 {
+		t.Errorf("expected healthcheck del length 2, got %v", hcDel)
+	}
+	if len(staleUDPServices) != 0 {
+		// Services only added, so nothing stale yet
+		t.Errorf("expected stale UDP services length 0, got %d", len(staleUDPServices))
+	}
+}
+
+// TODO(thockin): add *more* tests for syncProxyRules() or break it down further and test the pieces.

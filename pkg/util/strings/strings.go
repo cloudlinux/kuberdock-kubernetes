@@ -1,5 +1,5 @@
 /*
-Copyright 2014 The Kubernetes Authors All rights reserved.
+Copyright 2014 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -19,6 +19,7 @@ package strings
 import (
 	"path"
 	"strings"
+	"unicode"
 )
 
 // Splits a fully qualified name and returns its namespace and name.
@@ -44,4 +45,15 @@ func ShortenString(str string, n int) string {
 	} else {
 		return str[:n]
 	}
+}
+
+// isVowel returns true if the rune is a vowel (case insensitive).
+func isVowel(c rune) bool {
+	vowels := []rune{'a', 'e', 'i', 'o', 'u'}
+	for _, value := range vowels {
+		if value == unicode.ToLower(c) {
+			return true
+		}
+	}
+	return false
 }

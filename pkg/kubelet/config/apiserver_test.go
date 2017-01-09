@@ -1,5 +1,5 @@
 /*
-Copyright 2014 The Kubernetes Authors All rights reserved.
+Copyright 2014 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -19,11 +19,12 @@ package config
 import (
 	"testing"
 
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/watch"
 	"k8s.io/kubernetes/pkg/api"
+	"k8s.io/kubernetes/pkg/api/v1"
 	"k8s.io/kubernetes/pkg/client/cache"
 	kubetypes "k8s.io/kubernetes/pkg/kubelet/types"
-	"k8s.io/kubernetes/pkg/runtime"
-	"k8s.io/kubernetes/pkg/watch"
 )
 
 type fakePodLW struct {
@@ -31,31 +32,31 @@ type fakePodLW struct {
 	watchResp watch.Interface
 }
 
-func (lw fakePodLW) List(options api.ListOptions) (runtime.Object, error) {
+func (lw fakePodLW) List(options v1.ListOptions) (runtime.Object, error) {
 	return lw.listResp, nil
 }
 
-func (lw fakePodLW) Watch(options api.ListOptions) (watch.Interface, error) {
+func (lw fakePodLW) Watch(options v1.ListOptions) (watch.Interface, error) {
 	return lw.watchResp, nil
 }
 
 var _ cache.ListerWatcher = fakePodLW{}
 
 func TestNewSourceApiserver_UpdatesAndMultiplePods(t *testing.T) {
-	pod1v1 := &api.Pod{
-		ObjectMeta: api.ObjectMeta{Name: "p"},
-		Spec:       api.PodSpec{Containers: []api.Container{{Image: "image/one"}}}}
-	pod1v2 := &api.Pod{
-		ObjectMeta: api.ObjectMeta{Name: "p"},
-		Spec:       api.PodSpec{Containers: []api.Container{{Image: "image/two"}}}}
-	pod2 := &api.Pod{
-		ObjectMeta: api.ObjectMeta{Name: "q"},
-		Spec:       api.PodSpec{Containers: []api.Container{{Image: "image/blah"}}}}
+	pod1v1 := &v1.Pod{
+		ObjectMeta: v1.ObjectMeta{Name: "p"},
+		Spec:       v1.PodSpec{Containers: []v1.Container{{Image: "image/one"}}}}
+	pod1v2 := &v1.Pod{
+		ObjectMeta: v1.ObjectMeta{Name: "p"},
+		Spec:       v1.PodSpec{Containers: []v1.Container{{Image: "image/two"}}}}
+	pod2 := &v1.Pod{
+		ObjectMeta: v1.ObjectMeta{Name: "q"},
+		Spec:       v1.PodSpec{Containers: []v1.Container{{Image: "image/blah"}}}}
 
 	// Setup fake api client.
 	fakeWatch := watch.NewFake()
 	lw := fakePodLW{
-		listResp:  &api.PodList{Items: []api.Pod{*pod1v1}},
+		listResp:  &v1.PodList{Items: []v1.Pod{*pod1v1}},
 		watchResp: fakeWatch,
 	}
 
@@ -128,17 +129,17 @@ func TestNewSourceApiserver_UpdatesAndMultiplePods(t *testing.T) {
 }
 
 func TestNewSourceApiserver_TwoNamespacesSameName(t *testing.T) {
-	pod1 := api.Pod{
-		ObjectMeta: api.ObjectMeta{Name: "p", Namespace: "one"},
-		Spec:       api.PodSpec{Containers: []api.Container{{Image: "image/one"}}}}
-	pod2 := api.Pod{
-		ObjectMeta: api.ObjectMeta{Name: "p", Namespace: "two"},
-		Spec:       api.PodSpec{Containers: []api.Container{{Image: "image/blah"}}}}
+	pod1 := v1.Pod{
+		ObjectMeta: v1.ObjectMeta{Name: "p", Namespace: "one"},
+		Spec:       v1.PodSpec{Containers: []v1.Container{{Image: "image/one"}}}}
+	pod2 := v1.Pod{
+		ObjectMeta: v1.ObjectMeta{Name: "p", Namespace: "two"},
+		Spec:       v1.PodSpec{Containers: []v1.Container{{Image: "image/blah"}}}}
 
 	// Setup fake api client.
 	fakeWatch := watch.NewFake()
 	lw := fakePodLW{
-		listResp:  &api.PodList{Items: []api.Pod{pod1, pod2}},
+		listResp:  &v1.PodList{Items: []v1.Pod{pod1, pod2}},
 		watchResp: fakeWatch,
 	}
 
@@ -172,7 +173,7 @@ func TestNewSourceApiserverInitialEmptySendsEmptyPodUpdate(t *testing.T) {
 	// Setup fake api client.
 	fakeWatch := watch.NewFake()
 	lw := fakePodLW{
-		listResp:  &api.PodList{Items: []api.Pod{}},
+		listResp:  &v1.PodList{Items: []v1.Pod{}},
 		watchResp: fakeWatch,
 	}
 
