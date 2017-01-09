@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Copyright 2014 The Kubernetes Authors All rights reserved.
+# Copyright 2014 The Kubernetes Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -34,6 +34,7 @@
 KUBE_ROOT=$(dirname "${BASH_SOURCE}")/../..
 source "${KUBE_ROOT}/cluster/aws/${KUBE_CONFIG_FILE-"config-default.sh"}"
 source "${KUBE_ROOT}/cluster/common.sh"
+source "${KUBE_ROOT}/cluster/lib/util.sh"
 
 ALLOCATE_NODE_CIDRS=true
 
@@ -64,10 +65,8 @@ case "${OS_DISTRIBUTION}" in
   wily)
     ;;
   vivid)
-    echo "vivid is currently end-of-life and does not get updates." >&2
-    echo "Please consider using wily or jessie instead" >&2
-    echo "(will continue in 10 seconds)" >&2
-    sleep 10
+    echo "vivid is no longer supported by kube-up; please use jessie instead" >&2
+    exit 2
     ;;
   coreos)
     echo "coreos is no longer supported by kube-up; please use jessie instead" >&2
@@ -94,14 +93,19 @@ source "${KUBE_ROOT}/cluster/aws/${OS_DISTRIBUTION}/util.sh"
 load_distro_utils
 
 # This removes the final character in bash (somehow)
-AWS_REGION=${ZONE%?}
+re='[a-zA-Z]'
+if [[ ${ZONE: -1} =~ $re  ]]; then 
+  AWS_REGION=${ZONE%?}
+else 
+  AWS_REGION=$ZONE
+fi
 
 export AWS_DEFAULT_REGION=${AWS_REGION}
 export AWS_DEFAULT_OUTPUT=text
 AWS_CMD="aws ec2"
 AWS_ASG_CMD="aws autoscaling"
 
-VPC_CIDR_BASE=172.20
+VPC_CIDR_BASE=${KUBE_VPC_CIDR_BASE:-172.20}
 MASTER_IP_SUFFIX=.9
 VPC_CIDR=${VPC_CIDR_BASE}.0.0/16
 SUBNET_CIDR=${VPC_CIDR_BASE}.0.0/24
@@ -115,6 +119,9 @@ fi
 
 MASTER_SG_NAME="kubernetes-master-${CLUSTER_ID}"
 NODE_SG_NAME="kubernetes-minion-${CLUSTER_ID}"
+
+IAM_PROFILE_MASTER="kubernetes-master-${CLUSTER_ID}-${VPC_NAME}"
+IAM_PROFILE_NODE="kubernetes-minion-${CLUSTER_ID}-${VPC_NAME}"
 
 # Be sure to map all the ephemeral drives.  We can specify more than we actually have.
 # TODO: Actually mount the correct number (especially if we have more), though this is non-trivial, and
@@ -132,7 +139,7 @@ fi
 # TODO (bburns) Parameterize this for multiple cluster per project
 function get_vpc_id {
   $AWS_CMD describe-vpcs \
-           --filters Name=tag:Name,Values=kubernetes-vpc \
+           --filters Name=tag:Name,Values=${VPC_NAME} \
                      Name=tag:KubernetesCluster,Values=${CLUSTER_ID} \
            --query Vpcs[].VpcId
 }
@@ -157,7 +164,7 @@ function get_igw_id {
 function get_elbs_in_vpc {
   # ELB doesn't seem to be on the same platform as the rest of AWS; doesn't support filtering
   aws elb --output json describe-load-balancers  | \
-    python -c "import json,sys; lst = [str(lb['LoadBalancerName']) for lb in json.load(sys.stdin)['LoadBalancerDescriptions'] if lb['VPCId'] == '$1']; print('\n'.join(lst))"
+    python -c "import json,sys; lst = [str(lb['LoadBalancerName']) for lb in json.load(sys.stdin)['LoadBalancerDescriptions'] if 'VPCId' in lb and lb['VPCId'] == '$1']; print('\n'.join(lst))"
 }
 
 function get_instanceid_from_name {
@@ -246,7 +253,13 @@ function query-running-minions () {
            --query ${query}
 }
 
-function find-running-minions () {
+function detect-node-names () {
+  # If this is called directly, VPC_ID might not be set
+  # (this is case from cluster/log-dump.sh)
+  if [[ -z "${VPC_ID:-}" ]]; then
+    VPC_ID=$(get_vpc_id)
+  fi
+
   NODE_IDS=()
   NODE_NAMES=()
   for id in $(query-running-minions "Reservations[].Instances[].InstanceId"); do
@@ -257,8 +270,14 @@ function find-running-minions () {
   done
 }
 
+# Called to detect the project on GCE
+# Not needed on AWS
+function detect-project() {
+  :
+}
+
 function detect-nodes () {
-  find-running-minions
+  detect-node-names
 
   # This is inefficient, but we want NODE_NAMES / NODE_IDS to be ordered the same as KUBE_NODE_IP_ADDRESSES
   KUBE_NODE_IP_ADDRESSES=()
@@ -310,17 +329,8 @@ function detect-security-groups {
 #   AWS_IMAGE
 function detect-image () {
 case "${OS_DISTRIBUTION}" in
-  trusty|coreos)
-    detect-trusty-image
-    ;;
-  vivid)
-    detect-vivid-image
-    ;;
   wily)
     detect-wily-image
-    ;;
-  wheezy)
-    detect-wheezy-image
     ;;
   jessie)
     detect-jessie-image
@@ -330,68 +340,6 @@ case "${OS_DISTRIBUTION}" in
     exit 2
     ;;
 esac
-}
-
-# Detects the AMI to use for trusty (considering the region)
-# Used by CoreOS & Ubuntu
-#
-# Vars set:
-#   AWS_IMAGE
-function detect-trusty-image () {
-  # This is the ubuntu 14.04 image for <region>, amd64, hvm:ebs-ssd
-  # See here: http://cloud-images.ubuntu.com/locator/ec2/ for other images
-  # This will need to be updated from time to time as amis are deprecated
-  if [[ -z "${AWS_IMAGE-}" ]]; then
-    case "${AWS_REGION}" in
-      ap-northeast-1)
-        AWS_IMAGE=ami-93876e93
-        ;;
-
-      ap-southeast-1)
-        AWS_IMAGE=ami-66546234
-        ;;
-
-      eu-central-1)
-        AWS_IMAGE=ami-e2a694ff
-        ;;
-
-      eu-west-1)
-        AWS_IMAGE=ami-d7fd6ea0
-        ;;
-
-      sa-east-1)
-        AWS_IMAGE=ami-a357eebe
-        ;;
-
-      us-east-1)
-        AWS_IMAGE=ami-6089d208
-        ;;
-
-      us-west-1)
-        AWS_IMAGE=ami-cf7d998b
-        ;;
-
-      cn-north-1)
-        AWS_IMAGE=ami-d436a4ed
-        ;;
-
-      us-gov-west-1)
-        AWS_IMAGE=ami-01523322
-        ;;
-
-      ap-southeast-2)
-        AWS_IMAGE=ami-cd4e3ff7
-        ;;
-
-      us-west-2)
-        AWS_IMAGE=ami-3b14370b
-        ;;
-
-      *)
-        echo "Please specify AWS_IMAGE directly (region ${AWS_REGION} not recognized)"
-        exit 1
-    esac
-  fi
 }
 
 # Detects the RootDevice to use in the Block Device Mapping (considering the AMI)
@@ -590,22 +538,24 @@ function ensure-master-ip {
   fi
 }
 
-# Creates a new DHCP option set configured correctly for Kubernetes
+# Creates a new DHCP option set configured correctly for Kubernetes when DHCP_OPTION_SET_ID is not specified
 # Sets DHCP_OPTION_SET_ID
 function create-dhcp-option-set () {
-  case "${AWS_REGION}" in
-    us-east-1)
-      OPTION_SET_DOMAIN=ec2.internal
-      ;;
+  if [[ -z ${DHCP_OPTION_SET_ID-} ]]; then
+    case "${AWS_REGION}" in
+      us-east-1)
+        OPTION_SET_DOMAIN=ec2.internal
+        ;;
 
-    *)
-      OPTION_SET_DOMAIN="${AWS_REGION}.compute.internal"
-  esac
+      *)
+        OPTION_SET_DOMAIN="${AWS_REGION}.compute.internal"
+    esac
 
-  DHCP_OPTION_SET_ID=$($AWS_CMD create-dhcp-options --dhcp-configuration Key=domain-name,Values=${OPTION_SET_DOMAIN} Key=domain-name-servers,Values=AmazonProvidedDNS --query DhcpOptions.DhcpOptionsId)
+    DHCP_OPTION_SET_ID=$($AWS_CMD create-dhcp-options --dhcp-configuration Key=domain-name,Values=${OPTION_SET_DOMAIN} Key=domain-name-servers,Values=AmazonProvidedDNS --query DhcpOptions.DhcpOptionsId)
 
-  add-tag ${DHCP_OPTION_SET_ID} Name kubernetes-dhcp-option-set
-  add-tag ${DHCP_OPTION_SET_ID} KubernetesCluster ${CLUSTER_ID}
+    add-tag ${DHCP_OPTION_SET_ID} Name kubernetes-dhcp-option-set
+    add-tag ${DHCP_OPTION_SET_ID} KubernetesCluster ${CLUSTER_ID}
+  fi
 
   $AWS_CMD associate-dhcp-options --dhcp-options-id ${DHCP_OPTION_SET_ID} --vpc-id ${VPC_ID} > $LOG
 
@@ -659,9 +609,9 @@ function upload-server-tars() {
       local project_hash=
       local key=$(aws configure get aws_access_key_id)
       if which md5 > /dev/null 2>&1; then
-        project_hash=$(md5 -q -s "${USER} ${key}")
+        project_hash=$(md5 -q -s "${USER} ${key} ${INSTANCE_PREFIX}")
       else
-        project_hash=$(echo -n "${USER} ${key}" | md5sum | awk '{ print $1 }')
+        project_hash=$(echo -n "${USER} ${key} ${INSTANCE_PREFIX}" | md5sum | awk '{ print $1 }')
       fi
       AWS_S3_BUCKET="kubernetes-staging-${project_hash}"
   fi
@@ -754,16 +704,18 @@ function add-tag {
 }
 
 # Creates the IAM profile, based on configuration files in templates/iam
+# usage: create-iam-profile kubernetes-master-us-west-1a-chom kubernetes-master
 function create-iam-profile {
   local key=$1
+  local role=$2
 
   local conf_dir=file://${KUBE_ROOT}/cluster/aws/templates/iam
 
   echo "Creating IAM role: ${key}"
-  aws iam create-role --role-name ${key} --assume-role-policy-document ${conf_dir}/${key}-role.json > $LOG
+  aws iam create-role --role-name ${key} --assume-role-policy-document ${conf_dir}/${role}-role.json > $LOG
 
   echo "Creating IAM role-policy: ${key}"
-  aws iam put-role-policy --role-name ${key} --policy-name ${key} --policy-document ${conf_dir}/${key}-policy.json > $LOG
+  aws iam put-role-policy --role-name ${key} --policy-name ${key} --policy-document ${conf_dir}/${role}-policy.json > $LOG
 
   echo "Creating IAM instance-policy: ${key}"
   aws iam create-instance-profile --instance-profile-name ${key} > $LOG
@@ -774,14 +726,11 @@ function create-iam-profile {
 
 # Creates the IAM roles (if they do not already exist)
 function ensure-iam-profiles {
-  aws iam get-instance-profile --instance-profile-name ${IAM_PROFILE_MASTER} || {
-    echo "Creating master IAM profile: ${IAM_PROFILE_MASTER}"
-    create-iam-profile ${IAM_PROFILE_MASTER}
-  }
-  aws iam get-instance-profile --instance-profile-name ${IAM_PROFILE_NODE} || {
-    echo "Creating minion IAM profile: ${IAM_PROFILE_NODE}"
-    create-iam-profile ${IAM_PROFILE_NODE}
-  }
+  echo "Creating master IAM profile: ${IAM_PROFILE_MASTER}"
+  create-iam-profile ${IAM_PROFILE_MASTER} kubernetes-master
+
+  echo "Creating minion IAM profile: ${IAM_PROFILE_NODE}"
+  create-iam-profile ${IAM_PROFILE_NODE} kubernetes-minion
 }
 
 # Wait for instance to be in specified state
@@ -838,13 +787,53 @@ function delete_security_group {
   echo "Deleting security group: ${sg_id}"
 
   # We retry in case there's a dependent resource - typically an ELB
-  n=0
+  local n=0
   until [ $n -ge 20 ]; do
     $AWS_CMD delete-security-group --group-id ${sg_id} > $LOG && return
     n=$[$n+1]
     sleep 3
   done
   echo "Unable to delete security group: ${sg_id}"
+  exit 1
+}
+
+
+
+# Deletes master and minion IAM roles and instance profiles
+# usage: delete-iam-instance-profiles
+function delete-iam-profiles {
+  for iam_profile_name in ${IAM_PROFILE_MASTER} ${IAM_PROFILE_NODE};do
+    echo "Removing role from instance profile: ${iam_profile_name}"
+    conceal-no-such-entity-response aws iam remove-role-from-instance-profile --instance-profile-name "${iam_profile_name}" --role-name "${iam_profile_name}"
+
+    echo "Deleting IAM Instance-Profile: ${iam_profile_name}"
+    conceal-no-such-entity-response aws iam delete-instance-profile --instance-profile-name "${iam_profile_name}"
+
+    echo "Delete IAM role policy: ${iam_profile_name}"
+    conceal-no-such-entity-response aws iam delete-role-policy --role-name "${iam_profile_name}" --policy-name "${iam_profile_name}"
+
+    echo "Deleting IAM Role: ${iam_profile_name}"
+    conceal-no-such-entity-response aws iam delete-role --role-name "${iam_profile_name}"
+  done
+}
+
+# Detects NoSuchEntity response from AWS cli stderr output and conceals error
+# Otherwise the error is treated as fatal
+# usage: conceal-no-such-entity-response ...args
+function conceal-no-such-entity-response {
+  # in plain english: redirect stderr to stdout, and stdout to the log file
+  local -r errMsg=$($@ 2>&1 > $LOG)
+  if [[ "$errMsg" == "" ]];then
+    return
+  fi
+
+  echo $errMsg
+  if [[ "$errMsg" =~ " (NoSuchEntity) " ]];then
+    echo " -> no such entity response detected. will assume operation is not necessary due to prior incomplete teardown"
+    return
+  fi
+
+  echo "Error message is fatal. Will exit"
   exit 1
 }
 
@@ -872,7 +861,7 @@ function vpc-setup {
 	  VPC_ID=$($AWS_CMD create-vpc --cidr-block ${VPC_CIDR} --query Vpc.VpcId)
 	  $AWS_CMD modify-vpc-attribute --vpc-id $VPC_ID --enable-dns-support '{"Value": true}' > $LOG
 	  $AWS_CMD modify-vpc-attribute --vpc-id $VPC_ID --enable-dns-hostnames '{"Value": true}' > $LOG
-	  add-tag $VPC_ID Name kubernetes-vpc
+	  add-tag $VPC_ID Name ${VPC_NAME}
 	  add-tag $VPC_ID KubernetesCluster ${CLUSTER_ID}
   fi
 
@@ -984,14 +973,12 @@ function kube-up {
   authorize-security-group-ingress "${MASTER_SG_ID}" "--source-group ${NODE_SG_ID} --protocol all"
   authorize-security-group-ingress "${NODE_SG_ID}" "--source-group ${MASTER_SG_ID} --protocol all"
 
-  # TODO(justinsb): Would be fairly easy to replace 0.0.0.0/0 in these rules
-
   # SSH is open to the world
-  authorize-security-group-ingress "${MASTER_SG_ID}" "--protocol tcp --port 22 --cidr 0.0.0.0/0"
-  authorize-security-group-ingress "${NODE_SG_ID}" "--protocol tcp --port 22 --cidr 0.0.0.0/0"
+  authorize-security-group-ingress "${MASTER_SG_ID}" "--protocol tcp --port 22 --cidr ${SSH_CIDR}"
+  authorize-security-group-ingress "${NODE_SG_ID}" "--protocol tcp --port 22 --cidr ${SSH_CIDR}"
 
   # HTTPS to the master is allowed (for API access)
-  authorize-security-group-ingress "${MASTER_SG_ID}" "--protocol tcp --port 443 --cidr 0.0.0.0/0"
+  authorize-security-group-ingress "${MASTER_SG_ID}" "--protocol tcp --port 443 --cidr ${HTTP_API_CIDR}"
 
   # KUBE_USE_EXISTING_MASTER is used to add minions to an existing master
   if [[ "${KUBE_USE_EXISTING_MASTER:-}" == "true" ]]; then
@@ -1231,7 +1218,7 @@ function wait-minions {
     max_attempts=90
   fi
   while true; do
-    find-running-minions > $LOG
+    detect-node-names > $LOG
     if [[ ${#NODE_IDS[@]} == ${NUM_NODES} ]]; then
       echo -e " ${color_green}${#NODE_IDS[@]} minions started; ready${color_norm}"
       break
@@ -1279,10 +1266,14 @@ function build-config() {
   export KUBE_CERT="${CERT_DIR}/pki/issued/kubecfg.crt"
   export KUBE_KEY="${CERT_DIR}/pki/private/kubecfg.key"
   export CA_CERT="${CERT_DIR}/pki/ca.crt"
-  export CONTEXT="aws_${INSTANCE_PREFIX}"
+  export CONTEXT="${CONFIG_CONTEXT}"
   (
    umask 077
+
+   # Update the user's kubeconfig to include credentials for this apiserver.
    create-kubeconfig
+
+   create-kubeconfig-for-federation
   )
 }
 
@@ -1309,7 +1300,7 @@ function check-cluster() {
         local output=`check-minion ${minion_ip}`
         echo $output
         if [[ "${output}" != "working" ]]; then
-          if (( attempt > 9 )); then
+          if (( attempt > 20 )); then
             echo
             echo -e "${color_red}Your cluster is unlikely to work correctly." >&2
             echo "Please run ./cluster/kube-down.sh and re-create the" >&2
@@ -1393,6 +1384,11 @@ function kube-down {
         wait-for-instance-state ${instance_id} "terminated"
       done
       echo "All instances deleted"
+    fi
+    if [[ -n $(${AWS_ASG_CMD} describe-launch-configurations --launch-configuration-names ${ASG_NAME} --query LaunchConfigurations[].LaunchConfigurationName) ]]; then
+      echo "Warning: default auto-scaling launch configuration ${ASG_NAME} still exists, attempting to delete"
+      echo "  (This may happen if kube-up leaves just the launch configuration but no auto-scaling group.)"
+      ${AWS_ASG_CMD} delete-launch-configuration --launch-configuration-name ${ASG_NAME} || true
     fi
 
     find-master-pd
@@ -1479,7 +1475,37 @@ function kube-down {
 
     echo "Deleting VPC: ${vpc_id}"
     $AWS_CMD delete-vpc --vpc-id $vpc_id > $LOG
+  else
+    echo "" >&2
+    echo -e "${color_red}Cluster NOT deleted!${color_norm}" >&2
+    echo "" >&2
+    echo "No VPC was found with tag KubernetesCluster=${CLUSTER_ID}" >&2
+    echo "" >&2
+    echo "If you are trying to delete a cluster in a shared VPC," >&2
+    echo "please consider using one of the methods in the kube-deploy repo." >&2
+    echo "See: https://github.com/kubernetes/kube-deploy/blob/master/docs/delete_cluster.md" >&2
+    echo "" >&2
+    echo "Note: You may be seeing this message may be because the cluster was already deleted, or" >&2
+    echo "has a name other than '${CLUSTER_ID}'." >&2
   fi
+
+  if [[ -z "${DHCP_OPTION_SET_ID:-}" ]]; then
+    dhcp_option_ids=$($AWS_CMD describe-dhcp-options \
+                               --output text \
+                               --filters Name=tag:Name,Values=kubernetes-dhcp-option-set \
+                                         Name=tag:KubernetesCluster,Values=${CLUSTER_ID} \
+                               --query DhcpOptions[].DhcpOptionsId \
+                      | tr "\t" "\n")
+    for dhcp_option_id in ${dhcp_option_ids}; do
+      echo "Deleting DHCP option set: ${dhcp_option_id}"
+      $AWS_CMD delete-dhcp-options --dhcp-options-id $dhcp_option_id > $LOG
+    done
+  else
+    echo "Skipping deletion of pre-existing DHCP option set: ${DHCP_OPTION_SET_ID}"
+  fi
+
+  echo "Deleting IAM Instance profiles"
+  delete-iam-profiles
 }
 
 # Update a kubernetes cluster with latest source
@@ -1558,30 +1584,41 @@ function test-teardown {
 }
 
 
-# SSH to a node by name ($1) and run a command ($2).
-function ssh-to-node {
+# Gets the hostname (or IP) that we should SSH to for the given nodename
+# For the master, we use the nodename, for the nodes we use their instanceids
+function get_ssh_hostname {
   local node="$1"
-  local cmd="$2"
 
   if [[ "${node}" == "${MASTER_NAME}" ]]; then
     node=$(get_instanceid_from_name ${MASTER_NAME})
     if [[ -z "${node-}" ]]; then
-      echo "Could not detect Kubernetes master node.  Make sure you've launched a cluster with 'kube-up.sh'"
+      echo "Could not detect Kubernetes master node.  Make sure you've launched a cluster with 'kube-up.sh'" 1>&2
       exit 1
     fi
   fi
 
   local ip=$(get_instance_public_ip ${node})
   if [[ -z "$ip" ]]; then
-    echo "Could not detect IP for ${node}."
+    echo "Could not detect IP for ${node}." 1>&2
     exit 1
   fi
+  echo ${ip}
+}
 
-  for try in $(seq 1 5); do
-    if ssh -oLogLevel=quiet -oStrictHostKeyChecking=no -i "${AWS_SSH_KEY}" ${SSH_USER}@${ip} "${cmd}"; then
+# SSH to a node by name ($1) and run a command ($2).
+function ssh-to-node {
+  local node="$1"
+  local cmd="$2"
+
+  local ip=$(get_ssh_hostname ${node})
+
+  for try in {1..5}; do
+    if ssh -oLogLevel=quiet -oConnectTimeout=30 -oStrictHostKeyChecking=no -i "${AWS_SSH_KEY}" ${SSH_USER}@${ip} "echo test > /dev/null"; then
       break
     fi
+    sleep 5
   done
+  ssh -oLogLevel=quiet -oConnectTimeout=30 -oStrictHostKeyChecking=no -i "${AWS_SSH_KEY}" ${SSH_USER}@${ip} "${cmd}"
 }
 
 # Perform preparations required to run e2e tests

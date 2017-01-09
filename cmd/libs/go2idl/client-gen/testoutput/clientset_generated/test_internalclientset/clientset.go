@@ -1,5 +1,5 @@
 /*
-Copyright 2016 The Kubernetes Authors All rights reserved.
+Copyright 2017 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -18,25 +18,30 @@ package test_internalclientset
 
 import (
 	"github.com/golang/glog"
-	unversionedtestgroup "k8s.io/kubernetes/cmd/libs/go2idl/client-gen/testoutput/testgroup/unversioned"
+	internalversiontestgroup "k8s.io/kubernetes/cmd/libs/go2idl/client-gen/testoutput/clientset_generated/test_internalclientset/typed/testgroup/internalversion"
 	restclient "k8s.io/kubernetes/pkg/client/restclient"
 	discovery "k8s.io/kubernetes/pkg/client/typed/discovery"
+	"k8s.io/kubernetes/pkg/util/flowcontrol"
+	_ "k8s.io/kubernetes/plugin/pkg/client/auth"
 )
 
 type Interface interface {
 	Discovery() discovery.DiscoveryInterface
-	Testgroup() unversionedtestgroup.TestgroupInterface
+	Testgroup() internalversiontestgroup.TestgroupInterface
 }
 
 // Clientset contains the clients for groups. Each group has exactly one
 // version included in a Clientset.
 type Clientset struct {
 	*discovery.DiscoveryClient
-	*unversionedtestgroup.TestgroupClient
+	*internalversiontestgroup.TestgroupClient
 }
 
 // Testgroup retrieves the TestgroupClient
-func (c *Clientset) Testgroup() unversionedtestgroup.TestgroupInterface {
+func (c *Clientset) Testgroup() internalversiontestgroup.TestgroupInterface {
+	if c == nil {
+		return nil
+	}
 	return c.TestgroupClient
 }
 
@@ -47,34 +52,39 @@ func (c *Clientset) Discovery() discovery.DiscoveryInterface {
 
 // NewForConfig creates a new Clientset for the given config.
 func NewForConfig(c *restclient.Config) (*Clientset, error) {
+	configShallowCopy := *c
+	if configShallowCopy.RateLimiter == nil && configShallowCopy.QPS > 0 {
+		configShallowCopy.RateLimiter = flowcontrol.NewTokenBucketRateLimiter(configShallowCopy.QPS, configShallowCopy.Burst)
+	}
 	var clientset Clientset
 	var err error
-	clientset.TestgroupClient, err = unversionedtestgroup.NewForConfig(c)
+	clientset.TestgroupClient, err = internalversiontestgroup.NewForConfig(&configShallowCopy)
 	if err != nil {
-		return &clientset, err
+		return nil, err
 	}
 
-	clientset.DiscoveryClient, err = discovery.NewDiscoveryClientForConfig(c)
+	clientset.DiscoveryClient, err = discovery.NewDiscoveryClientForConfig(&configShallowCopy)
 	if err != nil {
 		glog.Errorf("failed to create the DiscoveryClient: %v", err)
+		return nil, err
 	}
-	return &clientset, err
+	return &clientset, nil
 }
 
 // NewForConfigOrDie creates a new Clientset for the given config and
 // panics if there is an error in the config.
 func NewForConfigOrDie(c *restclient.Config) *Clientset {
 	var clientset Clientset
-	clientset.TestgroupClient = unversionedtestgroup.NewForConfigOrDie(c)
+	clientset.TestgroupClient = internalversiontestgroup.NewForConfigOrDie(c)
 
 	clientset.DiscoveryClient = discovery.NewDiscoveryClientForConfigOrDie(c)
 	return &clientset
 }
 
 // New creates a new Clientset for the given RESTClient.
-func New(c *restclient.RESTClient) *Clientset {
+func New(c restclient.Interface) *Clientset {
 	var clientset Clientset
-	clientset.TestgroupClient = unversionedtestgroup.New(c)
+	clientset.TestgroupClient = internalversiontestgroup.New(c)
 
 	clientset.DiscoveryClient = discovery.NewDiscoveryClient(c)
 	return &clientset

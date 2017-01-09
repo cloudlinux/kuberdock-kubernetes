@@ -1,5 +1,5 @@
 /*
-Copyright 2015 The Kubernetes Authors All rights reserved.
+Copyright 2015 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -23,6 +23,7 @@ import (
 	"strconv"
 
 	"k8s.io/kubernetes/pkg/api"
+	"k8s.io/kubernetes/pkg/kubectl/cmd/templates"
 	cmdutil "k8s.io/kubernetes/pkg/kubectl/cmd/util"
 	"k8s.io/kubernetes/pkg/kubectl/resource"
 
@@ -30,22 +31,28 @@ import (
 	"github.com/spf13/cobra"
 )
 
-func NewCmdClusterInfo(f *cmdutil.Factory, out io.Writer) *cobra.Command {
+var longDescr = templates.LongDesc(`
+  Display addresses of the master and services with label kubernetes.io/cluster-service=true
+  To further debug and diagnose cluster problems, use 'kubectl cluster-info dump'.`)
+
+func NewCmdClusterInfo(f cmdutil.Factory, out io.Writer) *cobra.Command {
 	cmd := &cobra.Command{
 		Use: "cluster-info",
 		// clusterinfo is deprecated.
 		Aliases: []string{"clusterinfo"},
 		Short:   "Display cluster info",
-		Long:    "Display addresses of the master and services with label kubernetes.io/cluster-service=true",
+		Long:    longDescr,
 		Run: func(cmd *cobra.Command, args []string) {
 			err := RunClusterInfo(f, out, cmd)
 			cmdutil.CheckErr(err)
 		},
 	}
+	cmdutil.AddInclude3rdPartyFlags(cmd)
+	cmd.AddCommand(NewCmdClusterInfoDump(f, out))
 	return cmd
 }
 
-func RunClusterInfo(f *cmdutil.Factory, out io.Writer, cmd *cobra.Command) error {
+func RunClusterInfo(f cmdutil.Factory, out io.Writer, cmd *cobra.Command) error {
 	if len(os.Args) > 1 && os.Args[1] == "clusterinfo" {
 		printDeprecationWarning("cluster-info", "clusterinfo")
 	}
@@ -82,7 +89,7 @@ func RunClusterInfo(f *cmdutil.Factory, out io.Writer, cmd *cobra.Command) error
 					ip = ingress.Hostname
 				}
 				for _, port := range service.Spec.Ports {
-					link += "http://" + ip + ":" + strconv.Itoa(port.Port) + " "
+					link += "http://" + ip + ":" + strconv.Itoa(int(port.Port)) + " "
 				}
 			} else {
 				if len(client.GroupVersion.Group) == 0 {
@@ -100,6 +107,7 @@ func RunClusterInfo(f *cmdutil.Factory, out io.Writer, cmd *cobra.Command) error
 		}
 		return nil
 	})
+	out.Write([]byte("\nTo further debug and diagnose cluster problems, use 'kubectl cluster-info dump'.\n"))
 	return nil
 
 	// TODO consider printing more information about cluster

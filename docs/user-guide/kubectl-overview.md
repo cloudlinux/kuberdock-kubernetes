@@ -1,8 +1,3 @@
-<!-- BEGIN MUNGE: UNVERSIONED_WARNING -->
-
-
-<!-- END MUNGE: UNVERSIONED_WARNING -->
-
 # kubectl overview
 
 Use this overview of the `kubectl` command line interface to help you start running commands against Kubernetes clusters. This overview quickly covers `kubectl` syntax, describes the command operations, and provides common examples. For details about each command, including all the supported flags and subcommands, see the [kubectl](kubectl/kubectl.md) reference documentation.
@@ -16,13 +11,13 @@ Use this overview of the `kubectl` command line interface to help you start runn
   - [Resource types](#resource-types)
   - [Output options](#output-options)
     - [Formatting output](#formatting-output)
-      - [Syntax](#syntax)
+      - [Syntax](#syntax-1)
         - [Example](#example)
       - [Custom columns](#custom-columns)
         - [Examples](#examples)
     - [Sorting list objects](#sorting-list-objects)
-      - [Syntax](#syntax)
-        - [Example](#example)
+      - [Syntax](#syntax-2)
+        - [Example](#example-1)
   - [Examples: Common operations](#examples-common-operations)
   - [Next steps](#next-steps)
 
@@ -83,7 +78,7 @@ Operation       | Syntax	|       Description
 `describe`	| `kubectl describe (-f FILENAME | TYPE [NAME_PREFIX | /NAME | -l label]) [flags]` | Display the detailed state of one or more resources.
 `edit`		| `kubectl edit (-f FILENAME | TYPE NAME | TYPE/NAME) [flags]` | Edit and update the definition of one or more resources on the server by using the default editor.
 `exec`		| `kubectl exec POD [-c CONTAINER] [-i] [-t] [flags] [-- COMMAND [args...]]` | Execute a command against a container in a pod.
-`expose`		| `kubectl expose (-f FILENAME | TYPE NAME | TYPE/NAME) [--port=port] [--protocol=TCP|UDP] [--target-port=number-or-name] [--name=name] [----external-ip=external-ip-of-service] [--type=type] [flags]` | Expose a replication controller, service, or pod as a new Kubernetes service.
+`expose`		| `kubectl expose (-f FILENAME | TYPE NAME | TYPE/NAME) [--port=port] [--protocol=TCP|UDP] [--target-port=number-or-name] [--name=name] [----external-ip=external-ip-of-service] [--type=type] [flags]` | Expose a replication controller, service, deployment or pod as a new Kubernetes service.
 `get`		| `kubectl get (-f FILENAME | TYPE [NAME | /NAME | -l label]) [--watch] [--sort-by=FIELD] [[-o | --output]=OUTPUT_FORMAT] [flags]` | List one or more resources.
 `label`		| `kubectl label (-f FILENAME | TYPE NAME | TYPE/NAME) KEY_1=VAL_1 ... KEY_N=VAL_N [--overwrite] [--all] [--resource-version=version] [flags]` | Add or update the labels of one or more resources.
 `logs`		| `kubectl logs POD [-c CONTAINER] [--follow] [flags]` | Print the logs for a container in a pod.
@@ -283,13 +278,6 @@ Use the following set of examples to help you familiarize yourself with running 
 ## Next steps
 
 Start using the [kubectl](kubectl/kubectl.md) commands.
-
-
-
-
-<!-- BEGIN MUNGE: IS_VERSIONED -->
-<!-- TAG IS_VERSIONED -->
-<!-- END MUNGE: IS_VERSIONED -->
 
 
 <!-- BEGIN MUNGE: GENERATED_ANALYTICS -->

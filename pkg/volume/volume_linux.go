@@ -1,7 +1,7 @@
 // +build linux
 
 /*
-Copyright 2016 The Kubernetes Authors All rights reserved.
+Copyright 2016 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -38,7 +38,7 @@ const (
 // SetVolumeOwnership modifies the given volume to be owned by
 // fsGroup, and sets SetGid so that newly created files are owned by
 // fsGroup. If fsGroup is nil nothing is done.
-func SetVolumeOwnership(builder Builder, fsGroup *int64) error {
+func SetVolumeOwnership(mounter Mounter, fsGroup *int64) error {
 
 	if fsGroup == nil {
 		return nil
@@ -46,9 +46,20 @@ func SetVolumeOwnership(builder Builder, fsGroup *int64) error {
 
 	chownRunner := chown.New()
 	chmodRunner := chmod.New()
-	return filepath.Walk(builder.GetPath(), func(path string, info os.FileInfo, err error) error {
+	return filepath.Walk(mounter.GetPath(), func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
+		}
+
+		// chown and chmod pass through to the underlying file for symlinks.
+		// Symlinks have a mode of 777 but this really doesn't mean anything.
+		// The permissions of the underlying file are what matter.
+		// However, if one reads the mode of a symlink then chmods the symlink
+		// with that mode, it changes the mode of the underlying file, overridden
+		// the defaultMode and permissions initialized by the volume plugin, which
+		// is not what we want; thus, we skip chown/chmod for symlinks.
+		if info.Mode()&os.ModeSymlink != 0 {
+			return nil
 		}
 
 		stat, ok := info.Sys().(*syscall.Stat_t)
@@ -67,11 +78,15 @@ func SetVolumeOwnership(builder Builder, fsGroup *int64) error {
 		}
 
 		mask := rwMask
-		if builder.GetAttributes().ReadOnly {
+		if mounter.GetAttributes().ReadOnly {
 			mask = roMask
 		}
 
-		err = chmodRunner.Chmod(path, info.Mode()|mask|os.ModeSetgid)
+		if info.IsDir() {
+			mask |= os.ModeSetgid
+		}
+
+		err = chmodRunner.Chmod(path, info.Mode()|mask)
 		if err != nil {
 			glog.Errorf("Chmod failed on %v: %v", path, err)
 		}
