@@ -1,5 +1,5 @@
 /*
-Copyright 2015 The Kubernetes Authors All rights reserved.
+Copyright 2015 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -19,7 +19,6 @@ package apiserver
 import (
 	"net/http"
 	"net/url"
-	"reflect"
 	"testing"
 
 	"k8s.io/kubernetes/pkg/api/unversioned"
@@ -27,29 +26,34 @@ import (
 )
 
 type fakeNegotiater struct {
-	serializer runtime.Serializer
-	types      []string
-	mediaType  string
-	options    map[string]string
+	serializer, streamSerializer runtime.Serializer
+	framer                       runtime.Framer
+	types, streamTypes           []string
 }
 
-func (n *fakeNegotiater) SupportedMediaTypes() []string {
-	return n.types
-}
-
-func (n *fakeNegotiater) SerializerForMediaType(mediaType string, options map[string]string) (runtime.Serializer, bool) {
-	n.mediaType = mediaType
-	if len(options) > 0 {
-		n.options = options
+func (n *fakeNegotiater) SupportedMediaTypes() []runtime.SerializerInfo {
+	var out []runtime.SerializerInfo
+	for _, s := range n.types {
+		info := runtime.SerializerInfo{Serializer: n.serializer, MediaType: s, EncodesAsText: true}
+		for _, t := range n.streamTypes {
+			if t == s {
+				info.StreamSerializer = &runtime.StreamSerializerInfo{
+					EncodesAsText: true,
+					Framer:        n.framer,
+					Serializer:    n.streamSerializer,
+				}
+			}
+		}
+		out = append(out, info)
 	}
-	return n.serializer, n.serializer != nil
+	return out
 }
 
-func (n *fakeNegotiater) EncoderForVersion(serializer runtime.Serializer, gv unversioned.GroupVersion) runtime.Encoder {
+func (n *fakeNegotiater) EncoderForVersion(serializer runtime.Encoder, gv runtime.GroupVersioner) runtime.Encoder {
 	return n.serializer
 }
 
-func (n *fakeNegotiater) DecoderToVersion(serializer runtime.Serializer, gv unversioned.GroupVersion) runtime.Decoder {
+func (n *fakeNegotiater) DecoderToVersion(serializer runtime.Decoder, gv runtime.GroupVersioner) runtime.Decoder {
 	return n.serializer
 }
 
@@ -183,12 +187,6 @@ func TestNegotiate(t *testing.T) {
 			},
 		},
 		{
-			ns: &fakeNegotiater{types: []string{"a/b/c"}},
-			errFn: func(err error) bool {
-				return err.Error() == "only the following media types are accepted: a/b/c"
-			},
-		},
-		{
 			ns: &fakeNegotiater{},
 			errFn: func(err error) bool {
 				return err.Error() == "only the following media types are accepted: "
@@ -201,13 +199,6 @@ func TestNegotiate(t *testing.T) {
 				return err.Error() == "only the following media types are accepted: "
 			},
 		},
-		{
-			accept: "application/json",
-			ns:     &fakeNegotiater{types: []string{"application/json"}},
-			errFn: func(err error) bool {
-				return err.Error() == "only the following media types are accepted: application/json"
-			},
-		},
 	}
 
 	for i, test := range testCases {
@@ -216,7 +207,7 @@ func TestNegotiate(t *testing.T) {
 			req = &http.Request{Header: http.Header{}}
 			req.Header.Set("Accept", test.accept)
 		}
-		s, contentType, err := negotiateOutputSerializer(req, test.ns)
+		s, err := negotiateOutputSerializer(req, test.ns)
 		switch {
 		case err == nil && test.errFn != nil:
 			t.Errorf("%d: failed: expected error", i)
@@ -239,14 +230,11 @@ func TestNegotiate(t *testing.T) {
 			}
 			continue
 		}
-		if test.contentType != contentType {
-			t.Errorf("%d: unexpected %s %s", i, test.contentType, contentType)
+		if test.contentType != s.MediaType {
+			t.Errorf("%d: unexpected %s %s", i, test.contentType, s.MediaType)
 		}
-		if s != test.serializer {
-			t.Errorf("%d: unexpected %s %s", i, test.serializer, s)
-		}
-		if !reflect.DeepEqual(test.params, test.ns.options) {
-			t.Errorf("%d: unexpected %#v %#v", i, test.params, test.ns.options)
+		if s.Serializer != test.serializer {
+			t.Errorf("%d: unexpected %s %s", i, test.serializer, s.Serializer)
 		}
 	}
 }
