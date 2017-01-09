@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Copyright 2015 The Kubernetes Authors All rights reserved.
+# Copyright 2015 The Kubernetes Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -19,12 +19,11 @@ set -o nounset
 set -o pipefail
 
 KUBE_ROOT=$(dirname "${BASH_SOURCE}")/..
-source "${KUBE_ROOT}/hack/lib/init.sh"
 
-kube::golang::setup_env
+# NOTE: All output from this script needs to be copied back to the calling
+# source tree.  This is managed in kube::build::copy_output in build/common.sh.
+# If the output set is changed update that function.
 
-"${KUBE_ROOT}/hack/build-go.sh" cmd/libs/go2idl/go-to-protobuf cmd/libs/go2idl/go-to-protobuf/protoc-gen-gogo
-
-"${KUBE_ROOT}/hack/after-build/update-generated-protobuf.sh" "$@"
+"${KUBE_ROOT}/build/run.sh" hack/update-generated-protobuf-dockerized.sh "$@"
 
 # ex: ts=2 sw=2 et filetype=sh

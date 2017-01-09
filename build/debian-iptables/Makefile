@@ -1,4 +1,4 @@
-# Copyright 2016 The Kubernetes Authors All rights reserved.
+# Copyright 2016 The Kubernetes Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -16,7 +16,7 @@
 
 REGISTRY?="gcr.io/google_containers"
 IMAGE=debian-iptables
-TAG=v3
+TAG=v4
 ARCH?=amd64
 TEMP_DIR:=$(shell mktemp -d)
 
@@ -55,6 +55,6 @@ endif
 	docker build -t $(REGISTRY)/$(IMAGE)-$(ARCH):$(TAG) $(TEMP_DIR)
 
 push: build
-	gcloud docker push $(REGISTRY)/$(IMAGE)-$(ARCH):$(TAG)
+	gcloud docker -- push $(REGISTRY)/$(IMAGE)-$(ARCH):$(TAG)
 
 all: push

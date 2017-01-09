@@ -1,5 +1,5 @@
 /*
-Copyright 2014 The Kubernetes Authors All rights reserved.
+Copyright 2014 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -36,6 +36,7 @@ import (
 
 	"golang.org/x/net/websocket"
 	"k8s.io/kubernetes/pkg/api/rest"
+	utilnet "k8s.io/kubernetes/pkg/util/net"
 )
 
 func TestProxyRequestContentLengthAndTransferEncoding(t *testing.T) {
@@ -193,8 +194,7 @@ func TestProxyRequestContentLengthAndTransferEncoding(t *testing.T) {
 			// Write successful response
 			w.Write([]byte(successfulResponse))
 		}))
-		// TODO: Uncomment when fix #19254
-		// defer downstreamServer.Close()
+		defer downstreamServer.Close()
 
 		// Start the proxy server
 		serverURL, _ := url.Parse(downstreamServer.URL)
@@ -204,14 +204,13 @@ func TestProxyRequestContentLengthAndTransferEncoding(t *testing.T) {
 			expectedResourceNamespace: "default",
 		}
 		namespaceHandler := handleNamespaced(map[string]rest.Storage{"foo": simpleStorage})
-		server := httptest.NewServer(namespaceHandler)
-		// TODO: Uncomment when fix #19254
-		// defer server.Close()
+		server := newTestServer(namespaceHandler)
+		defer server.Close()
 
 		// Dial the proxy server
 		conn, err := net.Dial(server.Listener.Addr().Network(), server.Listener.Addr().String())
 		if err != nil {
-			t.Errorf("%s: unexpected error %v", err)
+			t.Errorf("%s: unexpected error %v", k, err)
 			continue
 		}
 		defer conn.Close()
@@ -227,28 +226,28 @@ func TestProxyRequestContentLengthAndTransferEncoding(t *testing.T) {
 		// Write the request headers
 		post := fmt.Sprintf("POST /%s/%s/%s/proxy/namespaces/default/foo/id/some/dir HTTP/1.1\r\n", prefix, newGroupVersion.Group, newGroupVersion.Version)
 		if _, err := fmt.Fprint(conn, post); err != nil {
-			t.Fatalf("%s: unexpected error %v", err)
+			t.Fatalf("%s: unexpected error %v", k, err)
 		}
 		for header, values := range item.reqHeaders {
 			for _, value := range values {
 				if _, err := fmt.Fprintf(conn, "%s: %s\r\n", header, value); err != nil {
-					t.Fatalf("%s: unexpected error %v", err)
+					t.Fatalf("%s: unexpected error %v", k, err)
 				}
 			}
 		}
 		// Header separator
 		if _, err := fmt.Fprint(conn, "\r\n"); err != nil {
-			t.Fatalf("%s: unexpected error %v", err)
+			t.Fatalf("%s: unexpected error %v", k, err)
 		}
 		// Body
 		if _, err := conn.Write(item.reqBody); err != nil {
-			t.Fatalf("%s: unexpected error %v", err)
+			t.Fatalf("%s: unexpected error %v", k, err)
 		}
 
 		// Read response
 		response, err := ioutil.ReadAll(conn)
 		if err != nil {
-			t.Errorf("%s: unexpected error %v", err)
+			t.Errorf("%s: unexpected error %v", k, err)
 			continue
 		}
 		if !strings.HasSuffix(string(response), successfulResponse) {
@@ -301,8 +300,7 @@ func TestProxy(t *testing.T) {
 			}
 			fmt.Fprint(out, item.respBody)
 		}))
-		// TODO: Uncomment when fix #19254
-		// defer downstreamServer.Close()
+		defer downstreamServer.Close()
 
 		serverURL, _ := url.Parse(downstreamServer.URL)
 		simpleStorage := &SimpleRESTStorage{
@@ -312,9 +310,8 @@ func TestProxy(t *testing.T) {
 		}
 
 		namespaceHandler := handleNamespaced(map[string]rest.Storage{"foo": simpleStorage})
-		namespaceServer := httptest.NewServer(namespaceHandler)
-		// TODO: Uncomment when fix #19254
-		// defer namespaceServer.Close()
+		namespaceServer := newTestServer(namespaceHandler)
+		defer namespaceServer.Close()
 
 		// test each supported URL pattern for finding the redirection resource in the proxy in a particular namespace
 		serverPatterns := []struct {
@@ -381,7 +378,7 @@ func TestProxyUpgrade(t *testing.T) {
 				ts.StartTLS()
 				return ts
 			},
-			ProxyTransport: &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}},
+			ProxyTransport: utilnet.SetTransportDefaults(&http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}),
 		},
 		"https (valid hostname + RootCAs)": {
 			ServerFunc: func(h http.Handler) *httptest.Server {
@@ -396,7 +393,7 @@ func TestProxyUpgrade(t *testing.T) {
 				ts.StartTLS()
 				return ts
 			},
-			ProxyTransport: &http.Transport{TLSClientConfig: &tls.Config{RootCAs: localhostPool}},
+			ProxyTransport: utilnet.SetTransportDefaults(&http.Transport{TLSClientConfig: &tls.Config{RootCAs: localhostPool}}),
 		},
 		"https (valid hostname + RootCAs + custom dialer)": {
 			ServerFunc: func(h http.Handler) *httptest.Server {
@@ -411,7 +408,7 @@ func TestProxyUpgrade(t *testing.T) {
 				ts.StartTLS()
 				return ts
 			},
-			ProxyTransport: &http.Transport{Dial: net.Dial, TLSClientConfig: &tls.Config{RootCAs: localhostPool}},
+			ProxyTransport: utilnet.SetTransportDefaults(&http.Transport{Dial: net.Dial, TLSClientConfig: &tls.Config{RootCAs: localhostPool}}),
 		},
 	}
 
@@ -423,8 +420,7 @@ func TestProxyUpgrade(t *testing.T) {
 			ws.Read(body)
 			ws.Write([]byte("hello " + string(body)))
 		}))
-		// TODO: Uncomment when fix #19254
-		// defer backendServer.Close()
+		defer backendServer.Close()
 
 		serverURL, _ := url.Parse(backendServer.URL)
 		simpleStorage := &SimpleRESTStorage{
@@ -436,9 +432,8 @@ func TestProxyUpgrade(t *testing.T) {
 
 		namespaceHandler := handleNamespaced(map[string]rest.Storage{"foo": simpleStorage})
 
-		server := httptest.NewServer(namespaceHandler)
-		// TODO: Uncomment when fix #19254
-		// defer server.Close()
+		server := newTestServer(namespaceHandler)
+		defer server.Close()
 
 		ws, err := websocket.Dial("ws://"+server.Listener.Addr().String()+"/"+prefix+"/"+newGroupVersion.Group+"/"+newGroupVersion.Version+"/proxy/namespaces/myns/foo/123", "", "http://127.0.0.1/")
 		if err != nil {
@@ -491,8 +486,7 @@ func TestRedirectOnMissingTrailingSlash(t *testing.T) {
 				t.Errorf("Unexpected query on url: %s, expected: %s", req.URL.RawQuery, item.query)
 			}
 		}))
-		// TODO: Uncomment when fix #19254
-		// defer downstreamServer.Close()
+		defer downstreamServer.Close()
 
 		serverURL, _ := url.Parse(downstreamServer.URL)
 		simpleStorage := &SimpleRESTStorage{
@@ -502,9 +496,8 @@ func TestRedirectOnMissingTrailingSlash(t *testing.T) {
 		}
 
 		handler := handleNamespaced(map[string]rest.Storage{"foo": simpleStorage})
-		server := httptest.NewServer(handler)
-		// TODO: Uncomment when fix #19254
-		// defer server.Close()
+		server := newTestServer(handler)
+		defer server.Close()
 
 		proxyTestPattern := "/" + prefix + "/" + newGroupVersion.Group + "/" + newGroupVersion.Version + "/proxy/namespaces/ns/foo/id" + item.path
 		req, err := http.NewRequest(

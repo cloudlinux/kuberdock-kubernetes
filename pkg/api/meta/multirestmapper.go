@@ -1,5 +1,5 @@
 /*
-Copyright 2014 The Kubernetes Authors All rights reserved.
+Copyright 2014 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -22,6 +22,7 @@ import (
 
 	"k8s.io/kubernetes/pkg/api/unversioned"
 	utilerrors "k8s.io/kubernetes/pkg/util/errors"
+	"k8s.io/kubernetes/pkg/util/sets"
 )
 
 // MultiRESTMapper is a wrapper for multiple RESTMappers.
@@ -55,7 +56,7 @@ func (m MultiRESTMapper) ResourcesFor(resource unversioned.GroupVersionResource)
 	for _, t := range m {
 		gvrs, err := t.ResourcesFor(resource)
 		// ignore "no match" errors, but any other error percolates back up
-		if IsNoResourceMatchError(err) {
+		if IsNoMatchError(err) {
 			continue
 		}
 		if err != nil {
@@ -90,7 +91,7 @@ func (m MultiRESTMapper) KindsFor(resource unversioned.GroupVersionResource) (gv
 	for _, t := range m {
 		gvks, err := t.KindsFor(resource)
 		// ignore "no match" errors, but any other error percolates back up
-		if IsNoResourceMatchError(err) {
+		if IsNoMatchError(err) {
 			continue
 		}
 		if err != nil {
@@ -154,7 +155,7 @@ func (m MultiRESTMapper) RESTMapping(gk unversioned.GroupKind, versions ...strin
 	for _, t := range m {
 		currMapping, err := t.RESTMapping(gk, versions...)
 		// ignore "no match" errors, but any other error percolates back up
-		if IsNoResourceMatchError(err) {
+		if IsNoMatchError(err) {
 			continue
 		}
 		if err != nil {
@@ -169,24 +170,60 @@ func (m MultiRESTMapper) RESTMapping(gk unversioned.GroupKind, versions ...strin
 	if len(allMappings) == 1 {
 		return allMappings[0], nil
 	}
+	if len(allMappings) > 1 {
+		var kinds []unversioned.GroupVersionKind
+		for _, m := range allMappings {
+			kinds = append(kinds, m.GroupVersionKind)
+		}
+		return nil, &AmbiguousKindError{PartialKind: gk.WithVersion(""), MatchingKinds: kinds}
+	}
+	if len(errors) > 0 {
+		return nil, utilerrors.NewAggregate(errors)
+	}
+	return nil, &NoKindMatchError{PartialKind: gk.WithVersion("")}
+}
+
+// RESTMappings returns all possible RESTMappings for the provided group kind, or an error
+// if the type is not recognized.
+func (m MultiRESTMapper) RESTMappings(gk unversioned.GroupKind) ([]*RESTMapping, error) {
+	var allMappings []*RESTMapping
+	var errors []error
+
+	for _, t := range m {
+		currMappings, err := t.RESTMappings(gk)
+		// ignore "no match" errors, but any other error percolates back up
+		if IsNoMatchError(err) {
+			continue
+		}
+		if err != nil {
+			errors = append(errors, err)
+			continue
+		}
+		allMappings = append(allMappings, currMappings...)
+	}
 	if len(errors) > 0 {
 		return nil, utilerrors.NewAggregate(errors)
 	}
 	if len(allMappings) == 0 {
-		return nil, fmt.Errorf("no match found for %v in %v", gk, versions)
+		return nil, &NoKindMatchError{PartialKind: gk.WithVersion("")}
 	}
-
-	return nil, fmt.Errorf("multiple matches found for %v in %v", gk, versions)
+	return allMappings, nil
 }
 
 // AliasesForResource finds the first alias response for the provided mappers.
 func (m MultiRESTMapper) AliasesForResource(alias string) ([]string, bool) {
+	seenAliases := sets.NewString()
 	allAliases := []string{}
 	handled := false
 
 	for _, t := range m {
 		if currAliases, currOk := t.AliasesForResource(alias); currOk {
-			allAliases = append(allAliases, currAliases...)
+			for _, currAlias := range currAliases {
+				if !seenAliases.Has(currAlias) {
+					allAliases = append(allAliases, currAlias)
+					seenAliases.Insert(currAlias)
+				}
+			}
 			handled = true
 		}
 	}
