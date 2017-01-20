@@ -447,6 +447,7 @@ func run(s *options.KubeletServer, kubeDeps *kubelet.KubeletDeps) (err error) {
 				CgroupDriver:          s.CgroupDriver,
 				ProtectKernelDefaults: s.ProtectKernelDefaults,
 				EnableCRI:             s.EnableCRI,
+				ResourceMultipliers:   s.ResourceMultipliers,
 			},
 			s.ExperimentalFailSwapOn)
 

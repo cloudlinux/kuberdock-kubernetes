@@ -3540,3 +3540,9 @@ const (
 	// DefaultFailureDomains defines the set of label keys used when TopologyKey is empty in PreferredDuringScheduling anti-affinity.
 	DefaultFailureDomains string = unversioned.LabelHostname + "," + unversioned.LabelZoneFailureDomain + "," + unversioned.LabelZoneRegion
 )
+
+// KuberDock
+type ResourceMultipliers struct {
+	CPUMultiplier    float32 `json:"cpuMultiplier"`
+	MemoryMultiplier float32 `json:"memoryMultiplier"`
+}
