@@ -51,6 +51,7 @@ import (
 	"k8s.io/kubernetes/pkg/kubelet/events"
 	"k8s.io/kubernetes/pkg/kubelet/eviction"
 	"k8s.io/kubernetes/pkg/kubelet/images"
+	"k8s.io/kubernetes/pkg/kubelet/kdplugins"
 	"k8s.io/kubernetes/pkg/kubelet/kuberuntime"
 	"k8s.io/kubernetes/pkg/kubelet/lifecycle"
 	"k8s.io/kubernetes/pkg/kubelet/metrics"
@@ -407,6 +408,8 @@ func NewMainKubelet(kubeCfg *componentconfig.KubeletConfiguration, kubeDeps *Kub
 	oomWatcher := NewOOMWatcher(kubeDeps.CAdvisorInterface, kubeDeps.Recorder)
 
 	klet := &Kubelet{
+		// KuberDock
+		kdHookPlugin:                   kdplugins.NewKDHookPlugin(kubeDeps.DockerClient, kubeClient),
 		hostname:                       hostname,
 		nodeName:                       nodeName,
 		dockerClient:                   kubeDeps.DockerClient,
@@ -614,6 +617,8 @@ func NewMainKubelet(kubeCfg *componentconfig.KubeletConfiguration, kubeDeps *Kub
 		switch kubeCfg.ContainerRuntime {
 		case "docker":
 			runtime := dockertools.NewDockerManager(
+				// KuberDock
+				klet.kdHookPlugin,
 				kubeDeps.DockerClient,
 				kubecontainer.FilterEventRecorder(kubeDeps.Recorder),
 				klet.livenessManager,
@@ -813,6 +818,9 @@ type nodeLister interface {
 
 // Kubelet is the main kubelet implementation.
 type Kubelet struct {
+	// KuberDock
+	kdHookPlugin *kdplugins.KDHookPlugin
+
 	kubeletConfiguration componentconfig.KubeletConfiguration
 
 	hostname      string

@@ -50,6 +50,7 @@ import (
 	kubecontainer "k8s.io/kubernetes/pkg/kubelet/container"
 	"k8s.io/kubernetes/pkg/kubelet/events"
 	"k8s.io/kubernetes/pkg/kubelet/images"
+	"k8s.io/kubernetes/pkg/kubelet/kdplugins"
 	"k8s.io/kubernetes/pkg/kubelet/lifecycle"
 	"k8s.io/kubernetes/pkg/kubelet/metrics"
 	"k8s.io/kubernetes/pkg/kubelet/network"
@@ -120,6 +121,7 @@ var (
 )
 
 type DockerManager struct {
+	kdHookPlugin        *kdplugins.KDHookPlugin
 	client              DockerInterface
 	recorder            record.EventRecorder
 	containerRefManager *kubecontainer.RefManager
@@ -210,6 +212,7 @@ func PodInfraContainerEnv(env map[string]string) kubecontainer.Option {
 }
 
 func NewDockerManager(
+	kdHookPlugin *kdplugins.KDHookPlugin,
 	client DockerInterface,
 	recorder record.EventRecorder,
 	livenessManager proberesults.Manager,
@@ -261,6 +264,7 @@ func NewDockerManager(
 	}
 
 	dm := &DockerManager{
+		kdHookPlugin:           kdHookPlugin,
 		client:                 client,
 		recorder:               recorder,
 		containerRefManager:    containerRefManager,
@@ -658,6 +662,8 @@ func (dm *DockerManager) runContainer(
 	// TODO(yifan): Consider to pull this logic out since we might need to reuse it in
 	// other container runtime.
 	_, containerName, cid := BuildDockerName(dockerName, container)
+	glog.V(3).Infof(">>> Running container %s", containerName)
+
 	if opts.PodContainerDir != "" && len(container.TerminationMessagePath) != 0 {
 		// Because the PodContainerDir contains pod uid and container name which is unique enough,
 		// here we just add a unique container id to make the path unique for different instances
@@ -810,12 +816,22 @@ func (dm *DockerManager) runContainer(
 	}
 	dm.recorder.Eventf(ref, api.EventTypeNormal, events.CreatedContainer, createdEventMsg)
 
+	// KuberDock hook
+	if container.Name != PodInfraContainerName {
+		dm.kdHookPlugin.OnContainerCreatedInPod(createResp.ID, container, pod)
+	}
+
 	if err = dm.client.StartContainer(createResp.ID); err != nil {
 		dm.recorder.Eventf(ref, api.EventTypeWarning, events.FailedToStartContainer,
 			"Failed to start container with docker id %v with error: %v", utilstrings.ShortenString(createResp.ID, 12), err)
 		return kubecontainer.ContainerID{}, err
 	}
 	dm.recorder.Eventf(ref, api.EventTypeNormal, events.StartedContainer, "Started container with docker id %v", utilstrings.ShortenString(createResp.ID, 12))
+
+	// KuberDock hook
+	if container.Name == PodInfraContainerName {
+		dm.kdHookPlugin.OnPodRun(pod)
+	}
 
 	return kubecontainer.DockerID(createResp.ID).ContainerID(), nil
 }
@@ -1407,7 +1423,14 @@ func PortForward(client DockerInterface, podInfraContainerID string, port uint16
 // been extract from new labels and stored in pod status.
 // only hard eviction scenarios should provide a grace period override, all other code paths must pass nil.
 func (dm *DockerManager) KillPod(pod *api.Pod, runningPod kubecontainer.Pod, gracePeriodOverride *int64) error {
+	glog.V(3).Info(">>> Killing Pod")
 	result := dm.killPodWithSyncResult(pod, runningPod, gracePeriodOverride)
+
+	// KuberDock hook
+	if result.Error() == nil {
+		dm.kdHookPlugin.OnPodKilled(pod)
+	}
+
 	return result.Error()
 }
 
