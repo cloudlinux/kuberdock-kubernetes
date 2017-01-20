@@ -58,6 +58,7 @@ type NodeConfig struct {
 	CgroupDriver          string
 	ProtectKernelDefaults bool
 	EnableCRI             bool
+	ResourceMultipliers   api.ResourceMultipliers
 }
 
 type Status struct {

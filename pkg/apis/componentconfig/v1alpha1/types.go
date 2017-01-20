@@ -16,7 +16,10 @@ limitations under the License.
 
 package v1alpha1
 
-import "k8s.io/kubernetes/pkg/api/unversioned"
+import (
+	"k8s.io/kubernetes/pkg/api"
+	"k8s.io/kubernetes/pkg/api/unversioned"
+)
 
 type KubeProxyConfiguration struct {
 	unversioned.TypeMeta
@@ -511,6 +514,8 @@ type KubeletConfiguration struct {
 	// (binaries, etc.) to mount the volume are available on the underlying node. If the check is enabled
 	// and fails the mount operation fails.
 	ExperimentalCheckNodeCapabilitiesBeforeMount bool `json:"ExperimentalCheckNodeCapabilitiesBeforeMount,omitempty"`
+	// KuberDock CPU/Memory multipliers
+	ResourceMultipliers api.ResourceMultipliers `json:"resourceMultipliers"`
 }
 
 type KubeletAuthorizationMode string

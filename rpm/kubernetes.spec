@@ -8,6 +8,7 @@
 %global with_debug 0
 %endif
 
+%define _unpackaged_files_terminate_build 0
 %if 0%{?with_debug}
 # https://bugzilla.redhat.com/show_bug.cgi?id=995136#c12
 %global _dwz_low_mem_die_limit 0
