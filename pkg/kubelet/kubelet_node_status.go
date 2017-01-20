@@ -476,7 +476,7 @@ func (kl *Kubelet) setNodeStatusMachineInfo(node *api.Node) {
 		node.Status.NodeInfo.MachineID = info.MachineID
 		node.Status.NodeInfo.SystemUUID = info.SystemUUID
 
-		for rName, rCap := range cadvisor.CapacityFromMachineInfo(info) {
+		for rName, rCap := range cadvisor.CapacityFromMachineInfo(info, kl.kubeletConfiguration.ResourceMultipliers) {
 			node.Status.Capacity[rName] = rCap
 		}
 
